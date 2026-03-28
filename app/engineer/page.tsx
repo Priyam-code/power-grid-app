@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useRouter, useSearchParams } from 'next/navigation';
 import EngineerLogin from '@/components/engineer/EngineerLogin';
-import EngineerDashboard from '@/components/engineer/EngineerDashboard';
+import EngineerDashboard from '@/components/engineer/dashboard/EngineerDashboard';
 
 type ViewState = 'login-engineer' | 'engineer-portal';
 
