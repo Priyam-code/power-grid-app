@@ -1,0 +1,1358 @@
+"use client";
+
+import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  ShieldCheck, 
+  MapPin, 
+  Lock, 
+  ChevronRight, 
+  Activity, 
+  AlertCircle,
+  Database,
+  ArrowLeft,
+  Settings,
+  LogOut,
+  User as UserIcon,
+  Radio,
+  Cpu,
+  Landmark,
+  BarChart3,
+  Globe,
+  SlidersHorizontal,
+  TerminalSquare,
+  Wrench,
+  Mail,
+  UserCheck,
+  CalendarDays,
+  CheckCircle,
+  Clock,
+  Briefcase,
+  HardHat
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged,
+  User
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc,
+  serverTimestamp 
+} from 'firebase/firestore';
+
+// --- Global Type Declarations for Environment Variables ---
+declare global {
+  var __firebase_config: string | undefined;
+  var __app_id: string | undefined;
+  var __initial_auth_token: string | undefined;
+  interface Window {
+    L: any; // Leaflet Global
+  }
+}
+
+// --- Firebase Configuration ---
+let app: any = null;
+let auth: any = null;
+let db: any = null;
+
+try {
+  if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+    const firebaseConfig = JSON.parse(__firebase_config);
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  }
+} catch (error) {
+  console.warn("Firebase configuration not found. Running in local mock mode.");
+}
+
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'india-power-grid-001';
+
+// --- Types & Interfaces ---
+type ViewState = 'map' | 'login' | 'dashboard' | 'engineer-portal';
+type UserRole = 'admin' | 'engineer';
+
+interface StateData {
+  id: number;
+  name: string;
+  color: string;
+  path: string;
+  load: number;
+  centerX: number;
+  centerY: number;
+  minLat: number;
+  maxLat: number;
+  minLon: number;
+  maxLon: number;
+}
+
+interface LogEntry {
+  id: string;
+  timestamp: Date;
+  message: string;
+  type: 'info' | 'warning' | 'critical';
+}
+
+interface Substation {
+  id: string;
+  name: string;
+  lat: number;
+  lon: number;
+  location: string;
+  currentLoadMW: number;
+  maxCapacityMW: number;
+  status: 'stable' | 'warning';
+  voltage: number;
+  logs: LogEntry[];
+}
+
+interface EngineerTask {
+  id: string;
+  location: string;
+  description: string;
+  severity: 'low' | 'medium' | 'critical';
+  status: 'pending' | 'completed';
+  timestamp: Date;
+}
+
+interface LeaveRequest {
+  id: string;
+  startDate: string;
+  endDate: string;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  submittedAt: Date;
+}
+
+// --- Constants & Helpers ---
+// Tactical Holographic Dark Mode Theme for the 3D Map
+const THEME_COLORS: string[] = [
+  '#0284c7', // sky-600
+  '#0369a1', // sky-700
+  '#075985', // sky-800
+  '#0d9488', // teal-600
+  '#0f766e', // teal-700
+  '#1d4ed8', // blue-700
+  '#1e40af'  // blue-800
+];
+
+const getShadowColor = (hex: string) => {
+  let r = parseInt(hex.slice(1, 3), 16);
+  let g = parseInt(hex.slice(3, 5), 16);
+  let b = parseInt(hex.slice(5, 7), 16);
+  r = Math.floor(r * 0.55); g = Math.floor(g * 0.55); b = Math.floor(b * 0.55);
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+};
+
+const SMOOTH_EASE = [0.22, 1, 0.36, 1];
+
+// --- Leaflet Component (Actual Map Engine) ---
+const LeafletMap = ({ selectedState, substations, selectedSubstationId, onSelectSubstation }: any) => {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstance = useRef<any>(null);
+  const markersRef = useRef<Record<string, any>>({});
+
+  useEffect(() => {
+    if (!mapRef.current || !window.L || mapInstance.current) return;
+
+    // Initialize map focused on state boundaries
+    const map = window.L.map(mapRef.current, { zoomControl: false }).fitBounds([
+      [selectedState.minLat, selectedState.minLon],
+      [selectedState.maxLat, selectedState.maxLon]
+    ]);
+
+    // Dark-mode Geographical Tile Layer
+    window.L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap &copy; CARTO',
+      subdomains: 'abcd',
+      maxZoom: 20
+    }).addTo(map);
+
+    mapInstance.current = map;
+
+    return () => {
+      map.remove();
+      mapInstance.current = null;
+    };
+  }, [selectedState]);
+
+  useEffect(() => {
+    if (!mapInstance.current || !window.L) return;
+
+    // Plot/Update Substation Nodes
+    substations.forEach((sub: Substation) => {
+      const color = sub.status === 'warning' ? '#f59e0b' : '#3b82f6'; 
+      const isSelected = sub.id === selectedSubstationId;
+      const size = isSelected ? 36 : 24; // Increased node size
+
+      const html = `<div style="background-color: ${color}; width: ${size}px; height: ${size}px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 15px ${color}; opacity: ${isSelected ? 1 : 0.8}; transition: all 0.3s; cursor: pointer;"></div>`;
+
+      const icon = window.L.divIcon({
+        html,
+        className: '', // Removes default leaflet icon square
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size / 2]
+      });
+
+      if (markersRef.current[sub.id]) {
+        markersRef.current[sub.id].setIcon(icon);
+      } else {
+        const marker = window.L.marker([sub.lat, sub.lon], { icon }).addTo(mapInstance.current);
+        marker.on('click', () => onSelectSubstation(sub.id));
+        marker.bindTooltip(`<b>${sub.name}</b><br/>${sub.currentLoadMW} MW`, { direction: 'top', offset: [0, -10] });
+        markersRef.current[sub.id] = marker;
+      }
+    });
+
+    // Fly to selected node gracefully
+    if (selectedSubstationId && markersRef.current[selectedSubstationId]) {
+       const sub = substations.find(s => s.id === selectedSubstationId);
+       if (sub) {
+           mapInstance.current.flyTo([sub.lat, sub.lon], Math.max(mapInstance.current.getZoom(), 8), { animate: true, duration: 1 });
+       }
+    }
+  }, [substations, selectedSubstationId, onSelectSubstation]);
+
+  return <div ref={mapRef} className="w-full h-full z-0" />;
+};
+
+
+// --- Main Application ---
+export default function App() {
+  const [view, setView] = useState<ViewState>('map');
+  const [role, setRole] = useState<UserRole>('admin');
+  const [selectedState, setSelectedState] = useState<StateData | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [mapData, setMapData] = useState<StateData[] | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [leafletReady, setLeafletReady] = useState(false);
+  
+  // Dashboard Specific State
+  const [substations, setSubstations] = useState<Substation[]>([]);
+  const [selectedSubstationId, setSelectedSubstationId] = useState<string | null>(null);
+  const [activeAlerts, setActiveAlerts] = useState<{id: string, message: string}[]>([]); // New Global Alerts State
+
+  // Engineer Portal Specific State
+  const [engTab, setEngTab] = useState<'inbox' | 'profile' | 'leave'>('inbox');
+  const [engTasks, setEngTasks] = useState<EngineerTask[]>([
+    { id: 'tsk-001', location: 'Substation Alpha (MH)', description: 'Transformer T-4 Oil Temperature Critical', severity: 'critical', status: 'pending', timestamp: new Date(Date.now() - 3600000) },
+    { id: 'tsk-002', location: 'Sector 42 Relay', description: 'Phase B Voltage Drop Detected', severity: 'medium', status: 'pending', timestamp: new Date(Date.now() - 7200000) },
+  ]);
+  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
+  const [leaveForm, setLeaveForm] = useState({ start: '', end: '', reason: '' });
+
+  // Dynamically Load Leaflet.js
+  useEffect(() => {
+    if (typeof window !== 'undefined' && !document.getElementById('leaflet-css')) {
+      const link = document.createElement('link');
+      link.id = 'leaflet-css';
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(link);
+      
+      const script = document.createElement('script');
+      script.id = 'leaflet-js';
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      script.onload = () => setLeafletReady(true);
+      document.body.appendChild(script);
+    } else if (typeof window !== 'undefined' && window.L) {
+      setLeafletReady(true);
+    }
+  }, []);
+
+  // Fetch Geographical Map Data
+  useEffect(() => {
+    fetch('https://raw.githubusercontent.com/geohacker/india/master/state/india_telengana.geojson')
+      .then(res => res.json())
+      .then(data => {
+        const project = ([lon, lat]: [number, number]): [number, number] => {
+          const scale = 25; 
+          const x = (lon - 82) * scale;
+          const y = -(lat - 22.5) * scale;
+          return [x + 400, y + 450]; 
+        };
+
+        const features: StateData[] = data.features.map((f: any, i: number) => {
+          const rawName = f.properties.NAME_1 || f.properties.st_nm || `State ${i}`;
+          const name = rawName.replace(' and ', ' & ').replace(' Islands', '');
+          
+          const load = Math.floor(Math.random() * 40 + 50);
+          const colorIndex = Math.max(0, Math.min(Math.floor((load - 50) / 8), THEME_COLORS.length - 1));
+          const color = THEME_COLORS[colorIndex];
+          
+          let path = "";
+          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+          let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+
+          const processCoord = (c: [number, number]) => {
+            const [lon, lat] = c;
+            if (lat < minLat) minLat = lat;
+            if (lat > maxLat) maxLat = lat;
+            if (lon < minLon) minLon = lon;
+            if (lon > maxLon) maxLon = lon;
+
+            const [x, y] = project(c);
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+            return `${x},${y}`;
+          };
+
+          if (f.geometry.type === "Polygon") {
+            path = "M" + f.geometry.coordinates[0].map(processCoord).join("L") + "Z";
+          } else if (f.geometry.type === "MultiPolygon") {
+            path = f.geometry.coordinates.map((poly: any) => 
+              "M" + poly[0].map(processCoord).join("L") + "Z"
+            ).join(" ");
+          }
+
+          return { 
+            id: i, name, color, path, load,
+            centerX: (minX + maxX) / 2,
+            centerY: (minY + maxY) / 2,
+            minLat, maxLat, minLon, maxLon
+          };
+        });
+        setMapData(features);
+      })
+      .catch(err => console.error("Map Data Error:", err));
+  }, []);
+
+  // Auth Initialization
+  useEffect(() => {
+    const initAuth = async () => {
+      if (!auth) {
+        setUser({ uid: 'local-dev-user' } as User);
+        setLoading(false);
+        return;
+      }
+
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        setUser({ uid: 'local-dev-user' } as User); 
+        setLoading(false);
+      }
+    };
+    initAuth();
+    if (auth) {
+      const unsubscribe = onAuthStateChanged(auth, (u) => {
+        if (u) setUser(u);
+        setLoading(false);
+      });
+      return () => unsubscribe();
+    }
+  }, []);
+
+  // Generate Actual Geographical Substations based on State Bounds
+  useEffect(() => {
+    if (view === 'dashboard' && selectedState) {
+      const generatedSubs: Substation[] = Array.from({ length: 6 }).map((_, i) => {
+        // Keep nodes slightly inward from absolute borders
+        const latRange = selectedState.maxLat - selectedState.minLat;
+        const lonRange = selectedState.maxLon - selectedState.minLon;
+        const lat = selectedState.minLat + latRange * (0.2 + Math.random() * 0.6);
+        const lon = selectedState.minLon + lonRange * (0.2 + Math.random() * 0.6);
+        
+        const initialCapacity = Math.floor(Math.random() * 50 + 100);
+        const initialLoad = Math.floor(Math.random() * (initialCapacity * 0.7) + 20);
+
+        return {
+          id: `sub-${i}`,
+          name: i === 0 ? 'Primary Hub' : `Substation Node ${String.fromCharCode(64 + i)}`,
+          lat, lon,
+          location: `Sector ${Math.floor(Math.random() * 99 + 1)}`,
+          currentLoadMW: initialLoad,
+          maxCapacityMW: initialCapacity,
+          status: 'stable',
+          voltage: 132 + Math.floor(Math.random() * 10),
+          logs: [
+            { id: `init-${i}`, timestamp: new Date(), message: 'Telemetry Sync Established', type: 'info' }
+          ]
+        };
+      });
+      setSubstations(generatedSubs);
+      setSelectedSubstationId(generatedSubs[0].id);
+    }
+  }, [view, selectedState]);
+
+  // Real-time Data Simulation for Substations
+  useEffect(() => {
+    if (view !== 'dashboard' || substations.length === 0) return;
+    
+    const interval = setInterval(() => {
+      let newlyTriggeredAlerts: {id: string, message: string}[] = [];
+
+      setSubstations(prev => prev.map(sub => {
+        const loadFluctuation = Math.floor((Math.random() - 0.5) * 8);
+        let newLoad = Math.max(10, Math.min(sub.maxCapacityMW + 10, sub.currentLoadMW + loadFluctuation));
+        
+        const loadPercentage = (newLoad / sub.maxCapacityMW) * 100;
+        let newStatus: 'stable' | 'warning' = sub.status;
+        let newLogs = [...sub.logs];
+        
+        if (loadPercentage >= 85 && sub.status === 'stable') {
+            newStatus = 'warning';
+            newLogs.unshift({
+                id: Math.random().toString(),
+                timestamp: new Date(),
+                message: `CRITICAL: Load exceeded safe threshold (${loadPercentage.toFixed(1)}%)`,
+                type: 'critical'
+            });
+            newlyTriggeredAlerts.push({
+                id: Math.random().toString(),
+                message: `CRITICAL ALERT: ${sub.name} exceeded maximum safe capacity (${loadPercentage.toFixed(1)}%)!`
+            });
+        } else if (loadPercentage < 80 && sub.status === 'warning') {
+            newStatus = 'stable';
+            newLogs.unshift({
+                id: Math.random().toString(),
+                timestamp: new Date(),
+                message: 'Load returned to nominal levels',
+                type: 'info'
+            });
+        }
+
+        if (newLogs.length > 15) newLogs = newLogs.slice(0, 15);
+
+        return { ...sub, currentLoadMW: newLoad, status: newStatus, logs: newLogs };
+      }));
+
+      if (newlyTriggeredAlerts.length > 0) {
+          setActiveAlerts(prev => [...prev, ...newlyTriggeredAlerts]);
+          setTimeout(() => {
+              setActiveAlerts(prev => prev.filter(a => !newlyTriggeredAlerts.find(n => n.id === a.id)));
+          }, 6000);
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [view, substations.length]);
+
+  // Simulate Auto-Assignment of Faults to Engineer
+  useEffect(() => {
+    if (view !== 'engineer-portal') return;
+
+    const interval = setInterval(() => {
+      const isCritical = Math.random() > 0.7;
+      const locations = ['Substation Delta', 'Grid Node 7', 'Main Hub Relay', 'Sector 12 Step-down'];
+      const descriptions = ['Cooling Fan Failure', 'Breaker Tripped', 'Telemetry Offline', 'Voltage Spike Detected'];
+      
+      const newTask: EngineerTask = {
+        id: `tsk-${Math.floor(Math.random() * 10000)}`,
+        location: locations[Math.floor(Math.random() * locations.length)],
+        description: descriptions[Math.floor(Math.random() * descriptions.length)],
+        severity: isCritical ? 'critical' : 'medium',
+        status: 'pending',
+        timestamp: new Date()
+      };
+
+      setEngTasks(prev => [newTask, ...prev]);
+      
+      setActiveAlerts(prev => [...prev, {
+        id: newTask.id,
+        message: `NEW DISPATCH: ${newTask.description} at ${newTask.location}`
+      }]);
+
+      setTimeout(() => {
+        setActiveAlerts(prev => prev.filter(a => a.id !== newTask.id));
+      }, 5000);
+
+    }, 15000); // New fault every 15 seconds for demonstration
+
+    return () => clearInterval(interval);
+  }, [view]);
+
+  const updateSubstationCapacity = (id: string, newCapacity: number) => {
+      setSubstations(prev => prev.map(sub => {
+          if (sub.id === id) {
+              const newLogs = [{
+                  id: Math.random().toString(),
+                  timestamp: new Date(),
+                  message: `CONFIG: Max Capacity physically scaled to ${newCapacity} MW`,
+                  type: 'info' as const
+              }, ...sub.logs].slice(0, 15);
+              return { ...sub, maxCapacityMW: newCapacity, logs: newLogs };
+          }
+          return sub;
+      }));
+  };
+
+  const handleStateClick = (state: StateData) => {
+    setSelectedState(state);
+    setRole('admin');
+    setView('login');
+  };
+
+  const handleEngineerAccess = () => {
+    setRole('engineer');
+    setView('login');
+  };
+
+  const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (user && db) { 
+      try {
+        const logRef = collection(db, 'artifacts', appId, 'users', user.uid, 'logs');
+        await addDoc(logRef, {
+          action: `Login successful as ${role}`,
+          timestamp: serverTimestamp()
+        });
+      } catch (err) {}
+    }
+    if (role === 'engineer') {
+      setView('engineer-portal');
+    } else {
+      setView('dashboard');
+    }
+  };
+
+  const handleBack = () => {
+    setView('map');
+    setSelectedState(null);
+    setSubstations([]);
+    setSelectedSubstationId(null);
+  };
+
+  const handleResolveTask = (taskId: string) => {
+    setEngTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'completed' } : t));
+  };
+
+  const handleLeaveSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!leaveForm.start || !leaveForm.end || !leaveForm.reason) return;
+    
+    const newLeave: LeaveRequest = {
+      id: `lv-${Date.now()}`,
+      startDate: leaveForm.start,
+      endDate: leaveForm.end,
+      reason: leaveForm.reason,
+      status: 'pending',
+      submittedAt: new Date()
+    };
+    
+    setLeaveRequests([newLeave, ...leaveRequests]);
+    setLeaveForm({ start: '', end: '', reason: '' });
+  };
+
+  if (loading) return (
+    <div className="flex items-center justify-center h-screen bg-[#070b19] text-white">
+      <div className="flex flex-col items-center gap-4">
+        <Landmark className="w-12 h-12 text-blue-500 animate-pulse" />
+        <p className="text-slate-400 text-sm tracking-widest uppercase font-bold">Initializing Geography</p>
+      </div>
+    </div>
+  );
+
+  const selectedSubstation = substations.find(s => s.id === selectedSubstationId) || null;
+
+  return (
+    <div className="min-h-screen bg-[#070b19] text-slate-100 overflow-hidden font-sans selection:bg-blue-500/30">
+      {/* Global Alert Toast Container */}
+      <div className="fixed top-6 right-6 z-[100] flex flex-col gap-3 pointer-events-none">
+        <AnimatePresence>
+          {activeAlerts.map(alert => (
+            <motion.div
+              key={alert.id}
+              initial={{ opacity: 0, x: 50, scale: 0.9 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9, x: 20 }}
+              className="bg-red-950/90 border border-red-500/50 shadow-[0_0_20px_rgba(239,68,68,0.4)] backdrop-blur-md p-4 rounded-xl flex items-start gap-3 w-80 pointer-events-auto"
+            >
+              <AlertCircle className="w-6 h-6 text-red-500 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-red-500 font-bold text-sm tracking-wide uppercase">Grid Alert</h4>
+                <p className="text-red-200 text-xs mt-1 leading-relaxed">{alert.message}</p>
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
+      <AnimatePresence mode="wait">
+        
+        {/* --- MAP VIEW (3D ISOMETRIC TACTICAL MAP) --- */}
+        {view === 'map' && (
+          <motion.div 
+            key="map-view"
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 1.05, filter: 'blur(8px)' }}
+            transition={{ duration: 0.6, ease: SMOOTH_EASE }}
+            className="relative flex flex-col items-center justify-center h-screen p-6 overflow-hidden bg-gradient-to-b from-[#070b19] to-[#0f172a]"
+          >
+            {/* Professional Header */}
+            <div className="absolute top-8 left-8 z-10">
+              <div className="flex items-center gap-4 mb-2">
+                <div className="p-3 bg-blue-700 rounded-lg shadow-lg shadow-blue-900/50 border border-blue-600">
+                  <Landmark className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h1 className="text-2xl font-black tracking-tight uppercase text-white">
+                    Central Grid Authority
+                  </h1>
+                  <p className="text-blue-500 text-sm font-bold tracking-wider uppercase">National Dispatch Center</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="absolute top-8 right-8 z-10">
+              <button 
+                onClick={handleEngineerAccess}
+                className="flex items-center gap-2 bg-slate-900 hover:bg-blue-900 text-white px-5 py-3 rounded-xl shadow-xl transition-all border border-slate-700 hover:border-blue-500 group"
+              >
+                <HardHat className="w-5 h-5 text-blue-400 group-hover:text-white transition-colors" />
+                <span className="font-bold tracking-wide text-sm uppercase">Field Engineer Access</span>
+              </button>
+            </div>
+
+            <div className="relative w-full max-w-4xl lg:max-w-6xl aspect-[4/5] flex items-center justify-center mt-12" style={{ perspective: '1500px' }}>
+              <div className="absolute inset-20 bg-blue-600/10 blur-[120px] rounded-full pointer-events-none transform-gpu" />
+
+              {mapData ? (
+                <motion.svg 
+                  viewBox="0 0 800 900" 
+                  className="w-full h-full overflow-visible relative z-10 drop-shadow-2xl"
+                  initial={{ opacity: 0, y: 40 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.8, ease: SMOOTH_EASE }}
+                  style={{ 
+                    transformStyle: 'preserve-3d',
+                    transform: 'rotateX(55deg) rotateZ(-35deg) scale(1.1)',
+                  }}
+                >
+                  {/* Extrusion / 3D Shadow Layer */}
+                  <g>
+                    {mapData.map((state) => (
+                      <path
+                        key={`shadow-${state.id}`}
+                        d={state.path}
+                        fill={getShadowColor(state.color)}
+                        transform="translate(-6, 16)"
+                        className="pointer-events-none"
+                      />
+                    ))}
+                  </g>
+
+                  {/* Top Surface Layer */}
+                  <g>
+                    {mapData.map((state, i) => (
+                      <g key={`group-${state.id}`}>
+                        <motion.path
+                          d={state.path}
+                          fill={state.color}
+                          stroke="#0f172a"
+                          strokeWidth="1.5"
+                          initial={{ y: 0, x: 0 }}
+                          whileHover={{ 
+                            y: -15, 
+                            x: 8, 
+                            filter: 'brightness(1.25)',
+                            stroke: '#38bdf8',
+                            strokeWidth: 2.5,
+                            transition: { type: 'spring', stiffness: 300, damping: 20 } 
+                          }}
+                          className="cursor-pointer transition-colors"
+                          onClick={() => handleStateClick(state)}
+                        />
+                        <text
+                          x={state.centerX}
+                          y={state.centerY}
+                          textAnchor="middle"
+                          fill="#ffffff"
+                          fontSize="12"
+                          className="pointer-events-none font-bold opacity-90"
+                          style={{ textShadow: '0px 2px 4px rgba(0,0,0,0.8)' }}
+                        >
+                          {state.name}
+                        </text>
+                      </g>
+                    ))}
+                  </g>
+                </motion.svg>
+              ) : (
+                <div className="flex flex-col items-center animate-pulse text-slate-400">
+                  <Globe className="w-12 h-12 mb-4 text-blue-500" />
+                  <p className="tracking-widest uppercase text-sm font-bold">Constructing Topography...</p>
+                </div>
+              )}
+
+              <div className="absolute bottom-4 right-4 bg-[#0f172a]/90 backdrop-blur-md border border-slate-700/50 p-5 rounded-xl max-w-xs z-10 shadow-2xl">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 border-b border-slate-700 pb-2">Grid Telemetry</h3>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-2 font-medium text-slate-300">
+                      <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div> 
+                      Operational
+                    </span>
+                    <span className="text-slate-400 font-mono">65.2%</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-2 font-medium text-slate-300">
+                      <div className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse shadow-[0_0_8px_rgba(245,158,11,0.8)]"></div> 
+                      Peak Load
+                    </span>
+                    <span className="text-slate-400 font-mono">22.8%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div className="absolute bottom-8 text-slate-400 flex items-center gap-2 z-10 bg-[#0f172a]/80 px-5 py-3 rounded-full border border-slate-700/50 shadow-lg animate-bounce">
+              <MapPin className="w-4 h-4 text-blue-500" />
+              <span className="text-xs font-bold tracking-widest uppercase">Select an Isometric Block to Authorize</span>
+            </div>
+          </motion.div>
+        )}
+
+        {/* --- LOGIN VIEW --- */}
+        {view === 'login' && (
+          <motion.div 
+            key="login-view"
+            initial={{ opacity: 0, y: 30, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95, filter: 'blur(4px)' }}
+            transition={{ duration: 0.6, ease: SMOOTH_EASE }}
+            className="min-h-screen flex flex-col items-center justify-center p-6 bg-[#070b19]"
+          >
+            <button 
+              onClick={handleBack}
+              className="absolute top-8 left-8 flex items-center gap-2 text-slate-400 hover:text-white transition-colors group z-20 font-medium tracking-wide uppercase text-sm"
+            >
+              <ArrowLeft className="w-5 h-5 group-hover:-translate-x-1 transition-transform" />
+              Abort Login
+            </button>
+
+            <div className="w-full max-w-md relative z-10">
+              <div className="mb-10 text-center">
+                <motion.div 
+                  initial={{ scale: 0.8, rotate: -10 }}
+                  animate={{ scale: 1, rotate: 0 }}
+                  transition={{ type: "spring", stiffness: 200, damping: 15 }}
+                  className="w-20 h-20 rounded-2xl mx-auto mb-6 flex items-center justify-center shadow-2xl border border-white/20"
+                  style={{ backgroundColor: role === 'engineer' ? '#d97706' : (selectedState?.color || '#1e3a8a') }}
+                >
+                  {role === 'engineer' ? <Wrench className="w-10 h-10 text-white" /> : <ShieldCheck className="w-10 h-10 text-white" />}
+                </motion.div>
+                <h2 className="text-3xl font-bold text-white mb-2 tracking-tight">
+                  {role === 'engineer' ? 'Field Engineer Portal' : 'Secure Authorization'}
+                </h2>
+                <p className="text-slate-400 font-medium">
+                  {role === 'engineer' ? 'Maintenance & Dispatch Identity Verification' : 'Regional Load Dispatch Center (RLDC)'}
+                </p>
+                {role === 'admin' && selectedState && (
+                  <div className="mt-2 inline-block px-3 py-1 bg-blue-900/40 border border-blue-700/50 rounded-md text-blue-300 font-semibold text-sm">
+                    {selectedState?.name?.toUpperCase()}
+                  </div>
+                )}
+              </div>
+
+              <form onSubmit={handleLogin} className="space-y-5 bg-[#0f172a] border border-slate-700/50 p-8 rounded-2xl shadow-2xl">
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Govt ID Number</label>
+                  <div className="relative">
+                    <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+                    <input 
+                      type="text" 
+                      required
+                      placeholder="e.g. ADM-7734"
+                      className="w-full bg-[#070b19] border border-slate-700/50 rounded-xl py-3.5 pl-12 pr-4 focus:ring-2 focus:ring-blue-600 focus:border-blue-600 outline-none transition-all font-mono text-slate-200 placeholder:font-sans"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Security Clearance Key</label>
+                  <div className="relative">
+                    <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+                    <input 
+                      type="password" 
+                      required
+                      placeholder="••••••••"
+                      className="w-full bg-[#070b19] border border-slate-700/50 rounded-xl py-3.5 pl-12 pr-4 focus:ring-2 focus:ring-blue-600 focus:border-blue-600 outline-none transition-all font-medium text-slate-200"
+                    />
+                  </div>
+                </div>
+                <button 
+                  type="submit"
+                  className={`w-full text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-[0.98] tracking-wide uppercase mt-4 ${
+                    role === 'engineer' ? 'bg-amber-600 hover:bg-amber-500 shadow-[0_0_15px_rgba(217,119,6,0.4)]' : 'bg-blue-700 hover:bg-blue-600 shadow-[0_0_15px_rgba(29,78,216,0.4)]'
+                  }`}
+                >
+                  Initiate Session
+                  <ChevronRight className="w-5 h-5" />
+                </button>
+                <div className="pt-4 flex items-center gap-3 text-xs text-amber-500/90 bg-amber-950/30 p-4 rounded-xl border border-amber-900/50">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
+                  <span className="font-medium leading-relaxed">UNAUTHORIZED ACCESS IS STRICTLY PROHIBITED. All login attempts are logged and traced by the Central Authority.</span>
+                </div>
+              </form>
+            </div>
+          </motion.div>
+        )}
+
+        {/* --- DASHBOARD VIEW --- */}
+        {view === 'dashboard' && (
+          <motion.div 
+            key="dashboard-view"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.5 }}
+            className="min-h-screen bg-[#070b19] flex"
+          >
+            {/* Sidebar */}
+            <motion.div 
+              initial={{ x: -50, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ duration: 0.6, delay: 0.1, ease: SMOOTH_EASE }}
+              className="w-20 lg:w-72 bg-[#0f172a] border-r border-slate-800 flex flex-col p-5 shrink-0 z-20"
+            >
+              <div className="flex items-center gap-4 mb-10 px-2">
+                <div className="p-2.5 bg-blue-700 rounded-lg shrink-0 shadow-[0_0_12px_rgba(29,78,216,0.6)]">
+                  <Landmark className="w-5 h-5 text-white" />
+                </div>
+                <div className="hidden lg:block">
+                  <span className="font-bold text-lg tracking-tight truncate block text-white">RLDC Control</span>
+                  <span className="text-xs text-blue-400 font-semibold tracking-widest uppercase block">{selectedState?.name}</span>
+                </div>
+              </div>
+              
+              <nav className="flex-1 space-y-2">
+                <NavItem icon={<Globe className="w-5 h-5" />} label="Geographic Mapping" active />
+                <NavItem icon={<BarChart3 className="w-5 h-5" />} label="Load Analytics" />
+                <NavItem icon={<Database className="w-5 h-5" />} label="System Logs" />
+              </nav>
+
+              <button 
+                onClick={handleBack}
+                className="mt-auto flex items-center gap-3 p-4 rounded-xl text-slate-400 hover:bg-red-950/40 hover:text-red-400 hover:border-red-900/50 border border-transparent transition-all w-full group"
+              >
+                <LogOut className="w-5 h-5 shrink-0 group-hover:-translate-x-1 transition-transform" />
+                <span className="hidden lg:block font-semibold uppercase tracking-wider text-sm">Terminate Session</span>
+              </button>
+            </motion.div>
+
+            {/* Main Content */}
+            <motion.div 
+              initial={{ y: 30, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ duration: 0.6, delay: 0.2, ease: SMOOTH_EASE }}
+              className="flex-1 overflow-y-auto p-4 lg:p-8 flex flex-col"
+            >
+              <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8 shrink-0 border-b border-slate-800 pb-6">
+                <div>
+                  <h2 className="text-2xl font-bold tracking-tight text-white">Live Node Telemetry</h2>
+                  <p className="text-slate-400 font-medium mt-1">Real-time geographical data stream secured via Govt Intranet.</p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="bg-[#0f172a] border border-slate-700/50 px-5 py-2.5 rounded-lg flex items-center gap-3 shadow-lg">
+                    <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
+                    <span className="text-sm font-bold tracking-wider uppercase text-slate-200">Uplink Secured</span>
+                  </div>
+                </div>
+              </header>
+
+              {/* State Map & Selected Node View */}
+              <div className="flex-1 min-h-[600px] grid grid-cols-1 xl:grid-cols-3 gap-6">
+                
+                {/* INTERACTIVE LEAFLET GEOGRAPHICAL MAP */}
+                <div className="xl:col-span-2 bg-[#020617] border border-slate-800 rounded-2xl flex flex-col relative overflow-hidden shadow-xl min-h-[500px]">
+                  
+                  {/* GIS Interface Overlay Headers */}
+                  <div className="absolute top-0 left-0 right-0 bg-slate-900/80 backdrop-blur-md border-b border-slate-800 p-4 z-20 flex justify-between items-start pointer-events-none">
+                    <div>
+                        <h3 className="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                            <Globe className="w-4 h-4 text-blue-500" />
+                            Tactical GIS Mapping
+                        </h3>
+                        <p className="text-xs text-slate-500 font-mono tracking-widest mt-1">LAT/LON COORDS OVERLAY ACTIVE</p>
+                    </div>
+                  </div>
+
+                  {leafletReady && selectedState ? (
+                      <LeafletMap 
+                        selectedState={selectedState} 
+                        substations={substations} 
+                        selectedSubstationId={selectedSubstationId} 
+                        onSelectSubstation={setSelectedSubstationId} 
+                      />
+                  ) : (
+                      <div className="w-full h-full flex flex-col items-center justify-center text-slate-500">
+                          <Activity className="w-8 h-8 animate-spin text-blue-500 mb-2"/>
+                          <p className="tracking-widest uppercase font-bold text-xs">Loading GIS Interface...</p>
+                      </div>
+                  )}
+                  
+                  {/* Map overlay styles for custom markers generated in Leaflet */}
+                  <style dangerouslySetInnerHTML={{__html: `
+                      .leaflet-container { background: #020617 !important; font-family: inherit; }
+                      .leaflet-tooltip { background: rgba(15,23,42,0.9); border: 1px solid #1e293b; color: white; border-radius: 8px; backdrop-filter: blur(4px); }
+                      .leaflet-tooltip-top:before { border-top-color: #1e293b; }
+                  `}} />
+                </div>
+
+                {/* Selected Node Details Panel */}
+                <div className="xl:col-span-1 flex flex-col h-full bg-[#0f172a] border border-slate-800 rounded-2xl shadow-xl overflow-hidden relative">
+                  <AnimatePresence mode="wait">
+                    {selectedSubstation ? (
+                      <motion.div 
+                        key={selectedSubstation.id}
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: -20 }}
+                        transition={{ duration: 0.4, ease: SMOOTH_EASE }}
+                        className="flex-1 flex flex-col p-6 overflow-y-auto"
+                      >
+                        {/* Header */}
+                        <div className="flex items-start justify-between mb-6 pb-6 border-b border-slate-800 shrink-0">
+                          <div>
+                            <div className={`text-[10px] font-bold px-2.5 py-1 rounded mb-3 inline-block transition-colors duration-500 uppercase tracking-widest border ${
+                              selectedSubstation.status === 'warning' ? 'bg-amber-500/10 text-amber-500 border-amber-500/20' : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+                            }`}>
+                              {selectedSubstation.status === 'warning' ? 'Critical Load Detected' : 'Operating Nominally'}
+                            </div>
+                            <h3 className="text-xl font-bold tracking-tight text-white mb-1">{selectedSubstation.name}</h3>
+                            <div className="flex items-center gap-2 text-slate-500 text-xs font-mono uppercase tracking-wider mb-1">
+                                <MapPin className="w-3 h-3 text-blue-500" /> {selectedSubstation.lat.toFixed(4)}, {selectedSubstation.lon.toFixed(4)}
+                            </div>
+                          </div>
+                          <div className="p-3.5 bg-[#070b19] border border-slate-800 rounded-xl shadow-inner shrink-0">
+                            <Cpu className="w-6 h-6 text-blue-500" />
+                          </div>
+                        </div>
+
+                        {/* Telemetry Section */}
+                        <div className="space-y-6 shrink-0 mb-6">
+                          <div>
+                            <div className="flex justify-between text-sm mb-3 font-medium">
+                              <span className="text-slate-400 uppercase tracking-wider text-xs font-bold flex items-center gap-2">
+                                <Activity className="w-4 h-4 text-blue-500"/>
+                                Real-Time Load
+                              </span>
+                              <span className={`font-mono font-bold ${selectedSubstation.status === 'warning' ? 'text-amber-500' : 'text-blue-400'}`}>
+                                {selectedSubstation.currentLoadMW} / {selectedSubstation.maxCapacityMW} MW
+                              </span>
+                            </div>
+                            <div className="h-3 bg-[#070b19] rounded-full overflow-hidden transform-gpu border border-slate-800 relative">
+                              {/* 85% Warning threshold line marker */}
+                              <div className="absolute top-0 bottom-0 left-[85%] w-px bg-red-500 z-10"></div>
+                              <motion.div 
+                                animate={{ width: `${Math.min((selectedSubstation.currentLoadMW / selectedSubstation.maxCapacityMW) * 100, 100)}%` }}
+                                transition={{ type: 'spring', bounce: 0, duration: 0.8 }}
+                                className={`h-full rounded-full transition-colors duration-500 relative z-0 ${
+                                  selectedSubstation.status === 'warning' ? 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.8)]' : 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]'
+                                }`}
+                              />
+                            </div>
+                            <p className="text-[10px] text-slate-500 mt-2 text-right">Warning Threshold: 85%</p>
+                          </div>
+                        </div>
+
+                        {/* Configuration Panel */}
+                        <div className="bg-[#070b19] p-5 rounded-xl border border-blue-900/40 shrink-0 mb-6">
+                            <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                <SlidersHorizontal className="w-4 h-4 text-blue-500" /> Node Configuration
+                            </h4>
+                            <div>
+                                <label className="flex justify-between text-xs font-semibold text-slate-300 mb-3">
+                                    Max Safe Capacity Limit
+                                    <span className="text-blue-400 font-mono">{selectedSubstation.maxCapacityMW} MW</span>
+                                </label>
+                                <input 
+                                    type="range" 
+                                    min="50" 
+                                    max="500" 
+                                    step="10"
+                                    value={selectedSubstation.maxCapacityMW}
+                                    onChange={(e) => updateSubstationCapacity(selectedSubstation.id, parseInt(e.target.value))}
+                                    className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500 hover:accent-blue-400 transition-all"
+                                />
+                                <div className="flex justify-between text-[10px] text-slate-600 font-mono mt-2">
+                                    <span>50 MW</span>
+                                    <span>500 MW</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Alert Logs */}
+                        <div className="bg-[#070b19] rounded-xl border border-slate-800/80 p-5 flex-1 flex flex-col min-h-[180px]">
+                            <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2 border-b border-slate-800 pb-2">
+                            <TerminalSquare className="w-4 h-4" /> Node Alert Logs
+                            </h4>
+                            <div className="space-y-3 overflow-y-auto pr-2 flex-1 scrollbar-thin scrollbar-thumb-slate-800">
+                                <AnimatePresence>
+                                    {selectedSubstation.logs.map((log) => (
+                                        <motion.div 
+                                        key={log.id}
+                                        initial={{ opacity: 0, x: -10 }}
+                                        animate={{ opacity: 1, x: 0 }}
+                                        className="flex items-start gap-3 text-sm font-medium border-l-2 pl-3 py-1"
+                                        style={{ borderColor: log.type === 'critical' ? '#ef4444' : log.type === 'warning' ? '#f59e0b' : '#3b82f6' }}
+                                        >
+                                        <div className="flex-1">
+                                            <p className={`text-xs ${log.type === 'critical' ? 'text-red-400 font-bold' : 'text-slate-300'}`}>{log.message}</p>
+                                            <span className="text-slate-600 font-mono text-[10px]">{log.timestamp.toLocaleTimeString()}</span>
+                                        </div>
+                                        </motion.div>
+                                    ))}
+                                </AnimatePresence>
+                            </div>
+                        </div>
+
+                      </motion.div>
+                    ) : (
+                      <motion.div 
+                        key="empty-state"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="flex-1 flex flex-col items-center justify-center text-center text-slate-500 p-8"
+                      >
+                        <Radio className="w-16 h-16 mb-5 opacity-20" />
+                        <p className="font-medium text-sm tracking-wide">Select a topographical node<br/>on the map to monitor live telemetry.</p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {/* --- ENGINEER PORTAL VIEW --- */}
+        {view === 'engineer-portal' && (
+          <motion.div 
+            key="engineer-portal-view"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.5 }}
+            className="min-h-screen bg-[#070b19] flex"
+          >
+            {/* Engineer Sidebar */}
+            <motion.div 
+              initial={{ x: -50, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ duration: 0.6, delay: 0.1, ease: SMOOTH_EASE }}
+              className="w-20 lg:w-72 bg-[#0f172a] border-r border-slate-800 flex flex-col p-5 shrink-0 z-20"
+            >
+              <div className="flex items-center gap-4 mb-10 px-2">
+                <div className="p-2.5 bg-amber-600 rounded-lg shrink-0 shadow-[0_0_12px_rgba(217,119,6,0.6)]">
+                  <HardHat className="w-5 h-5 text-white" />
+                </div>
+                <div className="hidden lg:block">
+                  <span className="font-bold text-lg tracking-tight truncate block text-white">Field Operations</span>
+                  <span className="text-xs text-amber-500 font-semibold tracking-widest uppercase block">Engineer Portal</span>
+                </div>
+              </div>
+              
+              <nav className="flex-1 space-y-2">
+                <button 
+                  onClick={() => setEngTab('inbox')}
+                  className={`flex items-center gap-4 p-3.5 rounded-xl transition-all w-full font-semibold text-sm tracking-wide ${
+                  engTab === 'inbox' ? 'bg-amber-600 text-white shadow-[0_0_15px_rgba(217,119,6,0.4)]' : 'text-slate-400 hover:bg-[#070b19] hover:text-slate-200'
+                }`}>
+                  <div className="relative">
+                    <Mail className="w-5 h-5" />
+                    {engTasks.filter(t => t.status === 'pending').length > 0 && (
+                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[#0f172a]" />
+                    )}
+                  </div>
+                  <span className="hidden lg:block">Fault Inbox</span>
+                </button>
+
+                <button 
+                  onClick={() => setEngTab('profile')}
+                  className={`flex items-center gap-4 p-3.5 rounded-xl transition-all w-full font-semibold text-sm tracking-wide ${
+                  engTab === 'profile' ? 'bg-amber-600 text-white shadow-[0_0_15px_rgba(217,119,6,0.4)]' : 'text-slate-400 hover:bg-[#070b19] hover:text-slate-200'
+                }`}>
+                  <UserCheck className="w-5 h-5" />
+                  <span className="hidden lg:block">My Profile</span>
+                </button>
+
+                <button 
+                  onClick={() => setEngTab('leave')}
+                  className={`flex items-center gap-4 p-3.5 rounded-xl transition-all w-full font-semibold text-sm tracking-wide ${
+                  engTab === 'leave' ? 'bg-amber-600 text-white shadow-[0_0_15px_rgba(217,119,6,0.4)]' : 'text-slate-400 hover:bg-[#070b19] hover:text-slate-200'
+                }`}>
+                  <CalendarDays className="w-5 h-5" />
+                  <span className="hidden lg:block">Leave Application</span>
+                </button>
+              </nav>
+
+              <button 
+                onClick={handleBack}
+                className="mt-auto flex items-center gap-3 p-4 rounded-xl text-slate-400 hover:bg-red-950/40 hover:text-red-400 hover:border-red-900/50 border border-transparent transition-all w-full group"
+              >
+                <LogOut className="w-5 h-5 shrink-0 group-hover:-translate-x-1 transition-transform" />
+                <span className="hidden lg:block font-semibold uppercase tracking-wider text-sm">Clock Out / Logout</span>
+              </button>
+            </motion.div>
+
+            {/* Engineer Main Content */}
+            <motion.div 
+              initial={{ y: 30, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              transition={{ duration: 0.6, delay: 0.2, ease: SMOOTH_EASE }}
+              className="flex-1 overflow-y-auto p-4 lg:p-8 flex flex-col"
+            >
+              <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8 shrink-0 border-b border-slate-800 pb-6">
+                <div>
+                  <h2 className="text-2xl font-bold tracking-tight text-white">
+                    {engTab === 'inbox' && 'Maintenance Directives (Inbox)'}
+                    {engTab === 'profile' && 'Engineer Dossier'}
+                    {engTab === 'leave' && 'Absence Management'}
+                  </h2>
+                  <p className="text-slate-400 font-medium mt-1">Status: <span className="text-emerald-500 font-bold">On Duty (Active)</span></p>
+                </div>
+              </header>
+
+              {/* INBOX TAB */}
+              {engTab === 'inbox' && (
+                <div className="max-w-4xl space-y-4">
+                  <AnimatePresence>
+                    {engTasks.length === 0 ? (
+                       <p className="text-slate-500">No tasks assigned currently.</p>
+                    ) : (
+                      engTasks.map((task) => (
+                        <motion.div 
+                          key={task.id}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          className={`bg-[#0f172a] border rounded-2xl p-6 flex flex-col md:flex-row gap-6 justify-between items-start md:items-center transition-all ${
+                            task.status === 'completed' ? 'border-emerald-900/50 opacity-60' :
+                            task.severity === 'critical' ? 'border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.1)]' : 'border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.05)]'
+                          }`}
+                        >
+                          <div className="space-y-3 flex-1">
+                            <div className="flex items-center gap-3">
+                              {task.status === 'completed' ? (
+                                <span className="px-2.5 py-1 bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 text-[10px] font-bold uppercase tracking-widest rounded">Resolved</span>
+                              ) : (
+                                <span className={`px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest rounded border ${
+                                  task.severity === 'critical' ? 'bg-red-500/10 text-red-500 border-red-500/20' : 'bg-amber-500/10 text-amber-500 border-amber-500/20'
+                                }`}>
+                                  {task.severity} Priority
+                                </span>
+                              )}
+                              <span className="text-slate-500 text-xs font-mono">{task.timestamp.toLocaleTimeString()} - {task.timestamp.toLocaleDateString()}</span>
+                            </div>
+                            <h4 className={`text-lg font-bold ${task.status === 'completed' ? 'text-slate-400 line-through' : 'text-white'}`}>{task.description}</h4>
+                            <div className="flex items-center gap-2 text-slate-400 text-sm">
+                              <MapPin className="w-4 h-4 text-blue-500" />
+                              {task.location}
+                            </div>
+                          </div>
+                          
+                          {task.status === 'pending' ? (
+                            <button 
+                              onClick={() => handleResolveTask(task.id)}
+                              className="shrink-0 bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-xl font-bold uppercase tracking-wider text-xs shadow-lg transition-colors flex items-center gap-2"
+                            >
+                              <CheckCircle className="w-4 h-4" /> Mark Complete
+                            </button>
+                          ) : (
+                            <div className="shrink-0 flex items-center gap-2 text-emerald-500 font-bold uppercase tracking-wider text-xs">
+                              <CheckCircle className="w-5 h-5" /> Done
+                            </div>
+                          )}
+                        </motion.div>
+                      ))
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
+
+              {/* PROFILE TAB */}
+              {engTab === 'profile' && (
+                <div className="max-w-3xl">
+                  <div className="bg-[#0f172a] border border-slate-800 rounded-3xl p-8 shadow-xl relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/5 rounded-full blur-3xl -mr-10 -mt-10" />
+                    
+                    <div className="flex items-center gap-6 mb-8 relative z-10">
+                      <div className="w-24 h-24 bg-slate-800 rounded-full border-4 border-slate-700 flex items-center justify-center overflow-hidden">
+                        <UserIcon className="w-12 h-12 text-slate-500" />
+                      </div>
+                      <div>
+                        <h2 className="text-3xl font-bold text-white mb-1">Ramesh Kumar</h2>
+                        <p className="text-amber-500 font-mono text-sm mb-2">ENG-ID: 884-XTR-9</p>
+                        <span className="px-3 py-1 bg-blue-500/10 text-blue-400 border border-blue-500/20 text-xs font-bold uppercase tracking-widest rounded-full">Level 3 Technician</span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative z-10 border-t border-slate-800 pt-8">
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-3 text-slate-300">
+                          <Briefcase className="w-5 h-5 text-slate-500" />
+                          <span className="text-sm font-medium">Department: <span className="text-white">High Voltage Transmissions</span></span>
+                        </div>
+                        <div className="flex items-center gap-3 text-slate-300">
+                          <MapPin className="w-5 h-5 text-slate-500" />
+                          <span className="text-sm font-medium">Base Station: <span className="text-white">RLDC Western Grid</span></span>
+                        </div>
+                      </div>
+                      <div className="space-y-4">
+                         <div className="bg-[#070b19] border border-slate-800 p-4 rounded-xl flex justify-between items-center">
+                           <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Faults Resolved</span>
+                           <span className="text-2xl font-bold text-emerald-500 font-mono">142</span>
+                         </div>
+                         <div className="bg-[#070b19] border border-slate-800 p-4 rounded-xl flex justify-between items-center">
+                           <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Duty Hours (Mo)</span>
+                           <span className="text-2xl font-bold text-blue-500 font-mono">164h</span>
+                         </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* LEAVE APPLICATION TAB */}
+              {engTab === 'leave' && (
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 max-w-5xl">
+                  {/* Form */}
+                  <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-6 shadow-xl">
+                    <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
+                      <CalendarDays className="w-5 h-5 text-amber-500" /> New Leave Request
+                    </h3>
+                    <form onSubmit={handleLeaveSubmit} className="space-y-5">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Start Date</label>
+                          <input 
+                            type="date" 
+                            required
+                            value={leaveForm.start}
+                            onChange={(e) => setLeaveForm({...leaveForm, start: e.target.value})}
+                            className="w-full bg-[#070b19] border border-slate-700/50 rounded-xl py-3 px-4 focus:ring-2 focus:ring-amber-500 outline-none text-slate-200"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">End Date</label>
+                          <input 
+                            type="date" 
+                            required
+                            value={leaveForm.end}
+                            onChange={(e) => setLeaveForm({...leaveForm, end: e.target.value})}
+                            className="w-full bg-[#070b19] border border-slate-700/50 rounded-xl py-3 px-4 focus:ring-2 focus:ring-amber-500 outline-none text-slate-200"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Reason for Leave</label>
+                        <textarea 
+                          required
+                          rows={4}
+                          value={leaveForm.reason}
+                          onChange={(e) => setLeaveForm({...leaveForm, reason: e.target.value})}
+                          placeholder="Provide details..."
+                          className="w-full bg-[#070b19] border border-slate-700/50 rounded-xl py-3 px-4 focus:ring-2 focus:ring-amber-500 outline-none text-slate-200 resize-none"
+                        ></textarea>
+                      </div>
+                      <button 
+                        type="submit"
+                        className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-4 rounded-xl transition-all shadow-[0_0_15px_rgba(217,119,6,0.4)] active:scale-[0.98] uppercase tracking-wide"
+                      >
+                        Submit Request
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* History */}
+                  <div className="bg-[#0f172a] border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col">
+                    <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2 border-b border-slate-800 pb-4">
+                      <Clock className="w-5 h-5 text-blue-500" /> Leave History
+                    </h3>
+                    <div className="space-y-4 overflow-y-auto flex-1 pr-2">
+                      {leaveRequests.length === 0 ? (
+                        <p className="text-slate-500 text-center py-8">No past leave applications.</p>
+                      ) : (
+                        leaveRequests.map(leave => (
+                          <div key={leave.id} className="bg-[#070b19] border border-slate-800 p-4 rounded-xl flex flex-col gap-2">
+                            <div className="flex justify-between items-start">
+                               <div className="text-sm font-bold text-white">
+                                 {new Date(leave.startDate).toLocaleDateString()} to {new Date(leave.endDate).toLocaleDateString()}
+                               </div>
+                               <span className="px-2 py-1 bg-amber-500/10 text-amber-500 border border-amber-500/20 text-[10px] font-bold uppercase tracking-widest rounded">
+                                 {leave.status}
+                               </span>
+                            </div>
+                            <p className="text-slate-400 text-xs">{leave.reason}</p>
+                            <span className="text-slate-600 text-[10px] font-mono mt-1">Submitted: {leave.submittedAt.toLocaleDateString()}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// --- Subcomponents ---
+
+interface NavItemProps {
+  icon: React.ReactNode;
+  label: string;
+  active?: boolean;
+}
+
+const NavItem: React.FC<NavItemProps> = ({ icon, label, active = false }) => (
+  <button className={`flex items-center gap-4 p-3.5 rounded-xl transition-all w-full font-semibold text-sm tracking-wide ${
+    active ? 'bg-blue-700 text-white shadow-[0_0_15px_rgba(29,78,216,0.4)]' : 'text-slate-400 hover:bg-[#070b19] hover:text-slate-200'
+  }`}>
+    {icon}
+    <span className="hidden lg:block">{label}</span>
+  </button>
+);
+
+interface StatCardProps {
+  title: string;
+  value: string;
+  trend: string;
+  color: string;
+  icon: React.ReactElement;
+}
+
+const StatCard: React.FC<StatCardProps> = ({ title, value, trend, color, icon }) => (
+  <div className="bg-[#0f172a] border border-slate-800 p-6 rounded-2xl relative overflow-hidden group shadow-lg">
+    <div className="absolute top-0 right-0 w-28 h-28 -mr-10 -mt-10 opacity-5 group-hover:opacity-10 transition-opacity duration-500" style={{ color }}>
+      {React.cloneElement(icon, { size: 112 })}
+    </div>
+    <p className="text-[10px] text-slate-400 mb-2 font-bold uppercase tracking-widest">{title}</p>
+    <div className="flex items-baseline gap-3">
+      <h4 className="text-4xl font-bold tracking-tight text-white">{value}</h4>
+      <span className={`text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider border ${
+        trend.includes('Attention') ? 'bg-amber-500/10 text-amber-500 border-amber-500/20' : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+      }`}>
+        {trend}
+      </span>
+    </div>
+    <div className="mt-5 h-1.5 w-full bg-[#070b19] rounded-full overflow-hidden transform-gpu border border-slate-800">
+      <motion.div 
+        initial={{ scaleX: 0 }}
+        animate={{ scaleX: 1 }}
+        transition={{ duration: 1.5, ease: SMOOTH_EASE }}
+        className="h-full origin-left shadow-[0_0_10px_currentColor]"
+        style={{ backgroundColor: color, color: color }}
+      />
+    </div>
+  </div>
+);
