@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, Suspense } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { useRouter, useSearchParams } from 'next/navigation';
 import EngineerLogin from '@/components/engineer/EngineerLogin';
@@ -8,7 +8,7 @@ import EngineerDashboard from '@/components/engineer/dashboard/EngineerDashboard
 
 type ViewState = 'login-engineer' | 'engineer-portal';
 
-export default function EngineerDashboardPage() {
+function EngineerPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -89,5 +89,13 @@ export default function EngineerDashboardPage() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+export default function EngineerPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#131313] text-neutral-200 flex items-center justify-center">Loading...</div>}>
+      <EngineerPageContent />
+    </Suspense>
   );
 }
