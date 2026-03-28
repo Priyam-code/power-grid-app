@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { Activity, Globe, MapPin } from 'lucide-react';
 import { StateData } from '../types';
 
-const SMOOTH_EASE = [0.22, 1, 0.36, 1];
+const SMOOTH_EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
 export default function MapLandingPage({ mapData, setView, handleMapStateClick }: any) {
   return (
@@ -13,11 +13,11 @@ export default function MapLandingPage({ mapData, setView, handleMapStateClick }
         <div className="p-4 bg-white text-[#1a1c1c] rounded-sm"><Activity className="w-6 h-6" /></div>
         <div>
           <h1 className="text-4xl font-bold tracking-tighter text-white uppercase leading-none">National Grid</h1>
-          <p className="text-neutral-400 text-[11px] tracking-[0.1em] uppercase mt-2">Central Command Overview</p>
+          <p className="text-neutral-400 text-[11px] tracking-widest uppercase mt-2">Central Command Overview</p>
         </div>
       </div>
       <div className="absolute top-10 right-10 z-10 flex flex-col gap-4 items-end">
-        <div className="text-[11px] text-neutral-500 font-medium tracking-[0.1em] uppercase mb-2">Access Protocol</div>
+        <div className="text-[11px] text-neutral-500 font-medium tracking-widest uppercase mb-2">Access Protocol</div>
         <button onClick={() => setView('login-manager')} className="flex items-center gap-4 px-6 py-4 rounded-sm transition-all w-64 bg-[#1c1b1b] hover:bg-[#201f1f] border border-[#474747]/15 group">
           <div className="w-2 h-2 rounded-full bg-white opacity-40 group-hover:opacity-100 group-hover:shadow-[0_0_10px_#ffffff] transition-all" />
           <span className="font-bold tracking-tight text-sm uppercase text-neutral-300 group-hover:text-white">Substation Mgr</span>
@@ -46,7 +46,7 @@ export default function MapLandingPage({ mapData, setView, handleMapStateClick }
       </div>
       <div className="absolute bottom-10 left-10 text-neutral-500 flex items-center gap-4 z-10">
         <div className="w-2 h-2 rounded-full bg-white shadow-[0_0_10px_#5d5f5f] animate-pulse" />
-        <span className="text-[11px] tracking-[0.1em] uppercase">Select Region to Authorize Admin Panel</span>
+        <span className="text-[11px] tracking-widest uppercase">Select Region to Authorize Admin Panel</span>
       </div>
     </motion.div>
   );
