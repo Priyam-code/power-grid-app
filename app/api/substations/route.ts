@@ -175,6 +175,7 @@ export async function PATCH(request: NextRequest) {
 		const id = String(body.id || '').trim();
 		const status = body.status ? String(body.status).toLowerCase() as SubstationStatus : undefined;
 		const currentLoadMw = body.currentLoadMw !== undefined ? Number(body.currentLoadMw) : undefined;
+		const maxCapacityMw = body.maxCapacityMw !== undefined ? Number(body.maxCapacityMw) : undefined;
 
 		if (!id) {
 			return NextResponse.json(
@@ -203,6 +204,11 @@ export async function PATCH(request: NextRequest) {
 			params.push(currentLoadMw);
 		}
 
+		if (maxCapacityMw !== undefined && !isNaN(maxCapacityMw)) {
+			updates.push(`max_capacity_mw = $${params.length + 1}`);
+			params.push(maxCapacityMw);
+		}
+
 		if (updates.length === 0) {
 			return NextResponse.json(
 				{ error: 'No fields to update' },
@@ -211,17 +217,64 @@ export async function PATCH(request: NextRequest) {
 		}
 
 		updates.push(`updated_at = NOW()`);
-
-		const query = `
-			UPDATE substations
-			SET ${updates.join(', ')}
-			WHERE id = $${params.length + 1}
-			RETURNING *
-		`;
-
 		params.push(id);
 
-		const [updated] = await sql.query(query, params);
+		let updated;
+		try {
+			if (status !== undefined && currentLoadMw !== undefined && maxCapacityMw !== undefined) {
+				[updated] = await sql`
+					UPDATE substations
+					SET status = ${toDbStatus(status)}, current_load_mw = ${currentLoadMw}, max_capacity_mw = ${maxCapacityMw}, updated_at = NOW()
+					WHERE id = ${id}
+					RETURNING *
+				`;
+			} else if (status !== undefined && currentLoadMw !== undefined) {
+				[updated] = await sql`
+					UPDATE substations
+					SET status = ${toDbStatus(status)}, current_load_mw = ${currentLoadMw}, updated_at = NOW()
+					WHERE id = ${id}
+					RETURNING *
+				`;
+			} else if (status !== undefined && maxCapacityMw !== undefined) {
+				[updated] = await sql`
+					UPDATE substations
+					SET status = ${toDbStatus(status)}, max_capacity_mw = ${maxCapacityMw}, updated_at = NOW()
+					WHERE id = ${id}
+					RETURNING *
+				`;
+			} else if (currentLoadMw !== undefined && maxCapacityMw !== undefined) {
+				[updated] = await sql`
+					UPDATE substations
+					SET current_load_mw = ${currentLoadMw}, max_capacity_mw = ${maxCapacityMw}, updated_at = NOW()
+					WHERE id = ${id}
+					RETURNING *
+				`;
+			} else if (status !== undefined) {
+				[updated] = await sql`
+					UPDATE substations
+					SET status = ${toDbStatus(status)}, updated_at = NOW()
+					WHERE id = ${id}
+					RETURNING *
+				`;
+			} else if (currentLoadMw !== undefined) {
+				[updated] = await sql`
+					UPDATE substations
+					SET current_load_mw = ${currentLoadMw}, updated_at = NOW()
+					WHERE id = ${id}
+					RETURNING *
+				`;
+			} else if (maxCapacityMw !== undefined) {
+				[updated] = await sql`
+					UPDATE substations
+					SET max_capacity_mw = ${maxCapacityMw}, updated_at = NOW()
+					WHERE id = ${id}
+					RETURNING *
+				`;
+			}
+		} catch (dbError) {
+			console.error('Database update query failed:', dbError);
+			throw dbError;
+		}
 
 		if (!updated) {
 			return NextResponse.json(
@@ -234,7 +287,7 @@ export async function PATCH(request: NextRequest) {
 	} catch (error) {
 		console.error('Failed to update substation:', error);
 		return NextResponse.json(
-			{ error: 'Failed to update substation' },
+			{ error: 'Failed to update substation', details: error instanceof Error ? error.message : String(error) },
 			{ status: 500 }
 		);
 	}

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence, cubicBezier } from 'framer-motion';
 import { 
   ShieldCheck, MapPin, Lock, ChevronRight, ChevronLeft, Activity, 
@@ -71,36 +71,49 @@ const TOKENS = {
 // STRICT-MODE SAFE LEAFLET COMPONENT
 // ============================================================================
 
-const LeafletMap = ({ selectedState, substations, selectedSubstationId, onSelectSubstation }: any) => {
+const LeafletMap = ({ selectedState, substations, selectedSubstationId, onSelectSubstation, isAddMode = false, onMapClick, tempMarkerPos }: any) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<any>(null);
   const markersLayer = useRef<any>(null); // Use LayerGroup to manage markers safely
+  const tempMarkerRef = useRef<any>(null);
   const [mapReady, setMapReady] = useState(false); // Force marker effect to run on remount
 
-  useEffect(() => {
-    if (!mapRef.current || !window.L) return;
+// To this — split into two effects:
+useEffect(() => {
+  if (!mapRef.current || !window.L) return;
+  if (mapInstance.current) return; // already initialized
 
-    if (!mapInstance.current) {
-      const map = window.L.map(mapRef.current, { zoomControl: false }).fitBounds([
-        [selectedState.minLat, selectedState.minLon], 
-        [selectedState.maxLat, selectedState.maxLon]
-      ]);
-      window.L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 20 }).addTo(map);
-      
-      markersLayer.current = window.L.layerGroup().addTo(map);
-      mapInstance.current = map;
-      setMapReady(true);
+  const map = window.L.map(mapRef.current, { zoomControl: false }).fitBounds([
+    [selectedState.minLat, selectedState.minLon],
+    [selectedState.maxLat, selectedState.maxLon]
+  ]);
+  window.L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 20 }).addTo(map);
+  markersLayer.current = window.L.layerGroup().addTo(map);
+  mapInstance.current = map;
+  setMapReady(true);
+
+  return () => {
+    if (mapInstance.current) {
+      mapInstance.current.remove();
+      mapInstance.current = null;
+      markersLayer.current = null;
+      setMapReady(false);
     }
+  };
+}, [selectedState]); // only reinit when state changes
 
-    return () => {
-      if (mapInstance.current) {
-        mapInstance.current.remove();
-        mapInstance.current = null;
-        markersLayer.current = null;
-        setMapReady(false);
-      }
-    };
-  }, [selectedState]);
+// Separate effect for click handler — attaches/detaches without recreating map
+useEffect(() => {
+  if (!mapInstance.current || !mapReady) return;
+  if (!isAddMode || !onMapClick) return;
+
+  const handler = (e: any) => onMapClick([e.latlng.lat, e.latlng.lng]);
+  mapInstance.current.on('click', handler);
+
+  return () => {
+    mapInstance.current?.off('click', handler);
+  };
+}, [isAddMode, onMapClick, mapReady]);
 
   useEffect(() => {
     if (!mapInstance.current || !markersLayer.current || !window.L || !mapReady) return;
@@ -125,11 +138,30 @@ const LeafletMap = ({ selectedState, substations, selectedSubstationId, onSelect
       markersLayer.current.addLayer(marker);
     });
 
-    if (selectedSubstationId) {
+    if (selectedSubstationId && !isAddMode) {
        const sub = substations.find((s: Substation) => s.id === selectedSubstationId);
        if (sub) mapInstance.current.flyTo([sub.lat, sub.lon], Math.max(mapInstance.current.getZoom(), 8), { animate: true, duration: 1 });
     }
-  }, [substations, selectedSubstationId, onSelectSubstation, mapReady]);
+  }, [substations, selectedSubstationId, onSelectSubstation, mapReady, isAddMode]);
+
+  useEffect(() => {
+    if (!mapInstance.current || !window.L) return;
+
+    if (tempMarkerRef.current) {
+      mapInstance.current.removeLayer(tempMarkerRef.current);
+      tempMarkerRef.current = null;
+    }
+
+    if (tempMarkerPos && isAddMode) {
+      const icon = window.L.divIcon({
+        html: '<div style="width:16px;height:16px;background-color:#3b82f6;border:2px solid white;border-radius:50%;box-shadow:0 0 10px rgba(59,130,246,0.5);"></div>',
+        iconSize: [16, 16],
+        iconAnchor: [8, 8],
+        className: ''
+      });
+      tempMarkerRef.current = window.L.marker(tempMarkerPos, { icon }).addTo(mapInstance.current);
+    }
+  }, [tempMarkerPos, isAddMode]);
 
   return <div ref={mapRef} className="w-full h-full z-0 bg-[#0e0e0e]" />;
 };
@@ -147,13 +179,29 @@ export default function App() {
   const [loginStateId, setLoginStateId] = useState<string>('');
   const [substations, setSubstations] = useState<Substation[]>([]);
   const [selectedSubstationId, setSelectedSubstationId] = useState<string | null>(null);
-  const [activeAlerts, setActiveAlerts] = useState<AppAlert[]>([]); 
+  const [activeAlerts, setActiveAlerts] = useState<AppAlert[]>([]);
+  const [subStationChanges, setSubstationChanges] = useState<Map<string, Partial<Substation>>>(new Map());
+  const [isLoadingSubstations, setIsLoadingSubstations] = useState(false); 
 
-  const [showStationModal, setShowStationModal] = useState(false);
+  const [showAddSubstationModal, setShowAddSubstationModal] = useState(false);
+  const [isAddMode, setIsAddMode] = useState(false);
+  const [tempMarkerPos, setTempMarkerPos] = useState<[number, number] | null>(null);
+  const [addFormData, setAddFormData] = useState({
+    name: '',
+    location: '',
+    lat: '',
+    lon: '',
+    currentLoadMw: '50',
+    maxCapacityMw: '150',
+    voltage: '132'
+  });
   const [showEngineerModal, setShowEngineerModal] = useState(false);
-  const [newStationName, setNewStationName] = useState('');
-  const [newStationCap, setNewStationCap] = useState('200');
-  const [newEngName, setNewEngName] = useState('');
+  const [engineerFormData, setEngineerFormData] = useState({
+    name: '',
+    email: '',
+    region: ''
+  });
+  const [isSubmittingEngineer, setIsSubmittingEngineer] = useState(false);
 
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([
     { id: 'lv-001', engineerName: 'Ramesh Kumar', startDate: '2026-04-10', endDate: '2026-04-12', reason: 'Family medical emergency', status: 'pending', submittedAt: new Date(Date.now() - 86400000) }
@@ -280,33 +328,38 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if ((view === 'manager-portal' || view === 'engineer-portal' || view === 'dashboard') && selectedState) {
-      const generatedSubs: Substation[] = Array.from({ length: 6 }).map((_, i) => {
-        const latRange = selectedState.maxLat - selectedState.minLat;
-        const lonRange = selectedState.maxLon - selectedState.minLon;
-        const lat = selectedState.minLat + latRange * (0.2 + Math.random() * 0.6);
-        const lon = selectedState.minLon + lonRange * (0.2 + Math.random() * 0.6);
-        
-        const initialCapacity = Math.floor(Math.random() * 50 + 100);
-        const initialLoad = Math.floor(Math.random() * (initialCapacity * 0.7) + 20);
+    const fetchSubstations = async () => {
+      if ((view === 'manager-portal' || view === 'engineer-portal' || view === 'dashboard') && selectedState) {
+        setIsLoadingSubstations(true);
+        try {
+          const response = await fetch(`/api/substations?state=${selectedState.name}`);
+          if (response.ok) {
+            const result = await response.json();
+            const substationsData = result.data || [];
+            
+            // Map database substations and add logs
+            const mappedSubs = substationsData.map((sub: any) => ({
+              ...sub,
+              logs: [
+                { id: `init-${sub.id}`, timestamp: new Date(sub.createdAt), message: 'Telemetry Sync Established', type: 'info' as const }
+              ]
+            }));
+            setSubstations(mappedSubs);
+            if (mappedSubs.length > 0) {
+              setSelectedSubstationId(mappedSubs[0].id);
+            }
+            setSubstationChanges(new Map()); // Reset changes tracker
+          }
+        } catch (err) {
+          console.error('Failed to fetch substations:', err);
+          pushAlert('Warning: Using local substation data', 'info');
+        } finally {
+          setIsLoadingSubstations(false);
+        }
+      }
+    };
 
-        return {
-          id: `sub-${i}`,
-          name: i === 0 ? 'Primary Hub' : `Substation Node ${String.fromCharCode(64 + i)}`,
-          lat, lon,
-          location: `Sector ${Math.floor(Math.random() * 99 + 1)}`,
-          currentLoadMW: initialLoad,
-          maxCapacityMW: initialCapacity,
-          status: 'stable',
-          voltage: 132 + Math.floor(Math.random() * 10),
-          logs: [
-            { id: `init-${i}`, timestamp: new Date(), message: 'Telemetry Sync Established', type: 'info' }
-          ]
-        };
-      });
-      setSubstations(generatedSubs);
-      setSelectedSubstationId(generatedSubs[0].id);
-    }
+    fetchSubstations();
   }, [view, selectedState]);
 
   useEffect(() => {
@@ -335,6 +388,7 @@ export default function App() {
     const interval = setInterval(() => {
       if (substations.length > 0) {
         let newlyTriggeredAlerts: AppAlert[] = [];
+        
         setSubstations(prev => prev.map(sub => {
           const loadFluctuation = Math.floor((Math.random() - 0.5) * 8);
           let newLoad = Math.max(10, Math.min(sub.maxCapacityMW + 10, sub.currentLoadMW + loadFluctuation));
@@ -391,7 +445,7 @@ export default function App() {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [view, substations.length, smartMeters.length]);
+  }, [view, substations.length, smartMeters.length, subStationChanges]);
 
   useEffect(() => {
     if (view !== 'engineer-portal') return;
@@ -418,6 +472,129 @@ export default function App() {
     return () => clearInterval(interval);
   }, [view]);
 
+const handleMapClick = useCallback((coords: [number, number]) => {
+  if (!selectedState) return;
+  const [lat, lon] = coords;
+  const inside =
+    lat >= selectedState.minLat &&
+    lat <= selectedState.maxLat &&
+    lon >= selectedState.minLon &&
+    lon <= selectedState.maxLon;
+
+  if (inside) {
+    setTempMarkerPos(coords);
+    setAddFormData((prev) => ({
+      ...prev,
+      lat: lat.toFixed(6),
+      lon: lon.toFixed(6)
+    }));
+  } else {
+    pushAlert('Location is outside the selected state.', 'info');
+  }
+}, [selectedState]);
+  const closeAddSubstationModal = () => {
+    setShowAddSubstationModal(false);
+    setIsAddMode(false);
+    setTempMarkerPos(null);
+    setAddFormData({
+      name: '',
+      location: '',
+      lat: '',
+      lon: '',
+      currentLoadMw: '50',
+      maxCapacityMw: '150',
+      voltage: '132'
+    });
+  };
+
+  const closeEngineerModal = () => {
+    setShowEngineerModal(false);
+    setEngineerFormData({
+      name: '',
+      email: '',
+      region: ''
+    });
+  };
+
+  const handleAddEngineer = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    
+    if (!engineerFormData.name || !engineerFormData.email || !engineerFormData.region) {
+      pushAlert('All fields are required', 'info');
+      return;
+    }
+
+    // Validate email
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(engineerFormData.email)) {
+      pushAlert('Please enter a valid email address', 'info');
+      return;
+    }
+
+    setIsSubmittingEngineer(true);
+    try {
+      const res = await fetch('/api/engineers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(engineerFormData)
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Failed to add engineer');
+      }
+
+      const result = await res.json();
+      pushAlert(`Engineer ${engineerFormData.name} created and credentials sent to ${engineerFormData.email}`, 'success');
+      closeEngineerModal();
+    } catch (err) {
+      console.error('Error adding engineer:', err);
+      pushAlert(`Failed to add engineer: ${err instanceof Error ? err.message : 'Unknown error'}`, 'info');
+    } finally {
+      setIsSubmittingEngineer(false);
+    }
+  };
+
+const handleAddSubstationSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+  e.preventDefault();
+  const lat = parseFloat(addFormData.lat);
+  const lon = parseFloat(addFormData.lon);
+
+  if (!addFormData.name || !addFormData.location) { pushAlert('Name and location are required.', 'info'); return; }
+  if (isNaN(lat) || isNaN(lon)) { pushAlert('Invalid coordinates.', 'info'); return; }
+  if (!selectedState) { pushAlert('No state selected.', 'info'); return; }
+
+  const validLat = lat >= selectedState.minLat && lat <= selectedState.maxLat;
+  const validLon = lon >= selectedState.minLon && lon <= selectedState.maxLon;
+  if (!validLat || !validLon) { pushAlert('Location is outside the selected state.', 'info'); return; }
+
+  try {
+    const res = await fetch('/api/substations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: addFormData.name,
+        state: selectedState.name,
+        location: addFormData.location,
+        lat,
+        lon,
+        currentLoadMw: parseInt(addFormData.currentLoadMw),
+        maxCapacityMw: parseInt(addFormData.maxCapacityMw),
+        voltage: parseInt(addFormData.voltage),
+        status: 'stable'
+      })
+    });
+    if (!res.ok) throw new Error();
+    const payload = await res.json();
+    setSubstations(prev => [...prev, { ...payload.data, logs: [] }]);
+    setSelectedSubstationId(payload.data.id);
+    closeAddSubstationModal();
+    pushAlert('Substation added successfully.', 'success');
+  } catch (err) {
+    console.error('Error adding substation:', err);
+    pushAlert('Failed to add substation.', 'info');
+  }
+};
   const updateSubstationCapacity = (id: string, newCapacity: number) => {
       setSubstations(prev => prev.map(sub => {
           if (sub.id === id) {
@@ -427,6 +604,15 @@ export default function App() {
                   message: `CONFIG: Max Capacity adjusted to ${newCapacity} MW`,
                   type: 'info' as const
               }, ...sub.logs].slice(0, 15);
+              
+              // Track change for database sync
+              setSubstationChanges(prev => {
+                const existing = prev.get(id) || {};
+                const updated = new Map(prev);
+                updated.set(id, { ...existing, maxCapacityMW: newCapacity });
+                return updated;
+              });
+              
               return { ...sub, maxCapacityMW: newCapacity, logs: newLogs };
           }
           return sub;
@@ -441,6 +627,56 @@ export default function App() {
   const executeLogin = async (e: React.FormEvent<HTMLFormElement>, targetView: ViewState) => {
     e.preventDefault();
     
+    // Handle engineer login with database validation
+    if (targetView === 'engineer-portal') {
+      const formData = new FormData(e.currentTarget);
+      const badgeId = formData.get('badgeId') as string;
+      const credential = formData.get('credential') as string;
+      const region = mapData?.find(s => s.id.toString() === loginStateId)?.name;
+
+      if (!region) {
+        pushAlert('Please select a region', 'info');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/engineers/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ badgeId, credential, region })
+        });
+
+        if (!res.ok) {
+          const error = await res.json();
+          pushAlert(error.error || 'Invalid credentials', 'info');
+          return;
+        }
+
+        if (mapData) {
+          const selected = mapData.find(s => s.id.toString() === loginStateId);
+          if (selected) setSelectedState(selected);
+        }
+
+        if (user && db) {
+          try {
+            const logRef = collection(db, 'artifacts', appId, 'users', user.uid, 'logs');
+            await addDoc(logRef, {
+              action: `Engineer login successful with badge ${badgeId}`,
+              timestamp: serverTimestamp()
+            });
+          } catch (err) {}
+        }
+
+        pushAlert('Engineer login successful', 'success');
+        setView('engineer-portal');
+      } catch (err) {
+        console.error('Login error:', err);
+        pushAlert('Login failed, please try again', 'info');
+      }
+      return;
+    }
+
+    // Handle other login types (admin, manager)
     if (targetView !== 'dashboard' && mapData) {
       const selected = mapData.find(s => s.id.toString() === loginStateId);
       if (selected) setSelectedState(selected);
@@ -458,11 +694,100 @@ export default function App() {
     setView(targetView);
   };
 
-  const handleBack = () => {
+const syncChangesToDatabase = async () => {
+  if (subStationChanges.size === 0) return;
+
+  console.log('=== SYNC DEBUG ===');
+  subStationChanges.forEach((changes, id) => {
+    console.log(`Substation ${id} raw changes:`, JSON.stringify(changes));
+  });
+
+
+
+
+  const keyMap: Record<string, string> = {
+    maxCapacityMW: 'maxCapacityMw',  // API reads body.maxCapacityMw
+    status: 'status',
+  };
+
+  const translateKeys = (changes: Partial<Substation>): Record<string, any> => {
+    const translated: Record<string, any> = {};
+    for (const [key, value] of Object.entries(changes)) {
+      const mappedKey = keyMap[key];
+      if (mappedKey !== undefined) translated[mappedKey] = value;
+    }
+    return translated;
+  };
+
+
+  try {
+    const syncPromises: Array<Promise<{ substationId: string; success: boolean; response: Response | null }>> = [];
+
+    subStationChanges.forEach((changes, substationId) => {
+      const translatedChanges = translateKeys(changes);
+
+      if (Object.keys(translatedChanges).length === 0) {
+        console.warn('Skipping sync for substation ' + substationId + ' - no mappable fields');
+        return;
+      }
+
+      syncPromises.push(
+        fetch('/api/substations', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: substationId, ...translatedChanges }),
+        })
+          .then(response => ({ substationId, success: response.ok, response }))
+          .catch(err => {
+            console.error('Fetch failed for substation ' + substationId + ':', err);
+            return { substationId, success: false, response: null };
+          })
+      );
+    });
+
+    if (syncPromises.length === 0) {
+      pushAlert('No changes to sync', 'info');
+      return;
+    }
+
+    const results = await Promise.all(syncPromises);
+    const successCount = results.filter(r => r.success).length;
+    const failureCount = results.filter(r => !r.success).length;
+
+    for (const result of results) {
+      if (!result.success && result.response) {
+        try {
+          const errorData = await result.response.json();
+          console.error('Substation ' + result.substationId + ' update failed:', errorData);
+        } catch (e) {
+          console.error('Substation ' + result.substationId + ' failed with status ' + result.response?.status);
+        }
+      }
+    }
+
+    if (failureCount === 0 && successCount > 0) {
+      pushAlert('All changes synced successfully', 'success');
+      setSubstationChanges(new Map());
+    } else if (successCount > 0) {
+      pushAlert('Partial sync: ' + successCount + ' succeeded, ' + failureCount + ' failed', 'info');
+    } else {
+      pushAlert('Failed to sync changes. Check console for details.', 'info');
+    }
+  } catch (err) {
+    console.error('Error syncing:', err);
+    pushAlert('Error syncing: ' + (err instanceof Error ? err.message : 'Unknown error'), 'info');
+  }
+};
+
+  const handleBack = async () => {
+    // Sync any pending changes before exiting
+    await syncChangesToDatabase();
+    
     setView('map');
     setSelectedState(null);
     setSubstations([]);
     setSelectedSubstationId(null);
+    setSubstationChanges(new Map());
   };
 
   const handleResolveTask = (taskId: string) => {
@@ -489,45 +814,6 @@ export default function App() {
     pushAlert('Leave application successfully submitted.', 'success');
   };
 
-  const handleLeaveAction = (id: string, action: 'approved' | 'rejected') => {
-    setLeaveRequests(prev => prev.map(lr => lr.id === id ? { ...lr, status: action } : lr));
-    pushAlert(`Leave request ${action}.`, action === 'approved' ? 'success' : 'info');
-  };
-
-  const handleAddStation = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedState) return;
-
-    const latRange = selectedState.maxLat - selectedState.minLat;
-    const lonRange = selectedState.maxLon - selectedState.minLon;
-    const lat = selectedState.minLat + latRange * (0.1 + Math.random() * 0.8);
-    const lon = selectedState.minLon + lonRange * (0.1 + Math.random() * 0.8);
-
-    const newSub: Substation = {
-      id: `sub-new-${Date.now()}`,
-      name: newStationName,
-      lat, lon,
-      location: `Sector ${Math.floor(Math.random() * 99 + 1)}`,
-      currentLoadMW: 0,
-      maxCapacityMW: parseInt(newStationCap) || 200,
-      status: 'stable',
-      voltage: 132,
-      logs: [{ id: `init-new`, timestamp: new Date(), message: 'Station initialized & registered.', type: 'success' }]
-    };
-
-    setSubstations(prev => [...prev, newSub]);
-    setSelectedSubstationId(newSub.id);
-    setShowStationModal(false);
-    setNewStationName('');
-    pushAlert(`New Substation "${newStationName}" registered successfully.`, 'success');
-  };
-
-  const handleAddEngineer = (e: React.FormEvent) => {
-    e.preventDefault();
-    setShowEngineerModal(false);
-    setNewEngName('');
-    pushAlert(`Engineer "${newEngName}" successfully assigned.`, 'success');
-  };
 
   const handleGenerateReport = () => {
     pushAlert('Gathering grid telemetry... Report generation initiated.', 'info');
@@ -702,7 +988,7 @@ export default function App() {
               </div>
 
               <form onSubmit={(e) => executeLogin(e, view === 'login-engineer' ? 'engineer-portal' : view === 'login-manager' ? 'manager-portal' : 'dashboard')} className="space-y-6 bg-[#1c1b1b] p-10 rounded-sm shadow-[0_20px_40px_rgba(0,0,0,0.5)]">
-                {(view === 'login-engineer' || view === 'login-manager') ? (
+        {(view === 'login-engineer' || view === 'login-manager') ? (
                   <div>
                     <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-3">{view === 'login-engineer' ? 'Assigned Region' : 'Operating Region'}</label>
                     <select value={loginStateId} onChange={(e) => setLoginStateId(e.target.value)} className="w-full bg-[#353534] border border-transparent focus:bg-[#393939] focus:border-white/20 rounded-sm py-4 px-4 outline-none text-white appearance-none cursor-pointer">
@@ -719,13 +1005,27 @@ export default function App() {
                 {(view === 'login-engineer' || view === 'login-manager') ? (
                   <div>
                     <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-3">{view === 'login-engineer' ? 'Technician Badge' : 'Station Master ID'}</label>
-                    <input type="text" required placeholder={view === 'login-engineer' ? "ENG-884" : "MGR-102"} className="w-full bg-[#353534] border border-transparent focus:bg-[#393939] focus:border-white/20 rounded-sm py-4 px-4 outline-none transition-all font-mono text-white placeholder:text-neutral-600" />
+                    <input 
+                      type="text" 
+                      required 
+                      id="badgeId"
+                      name="badgeId"
+                      placeholder={view === 'login-engineer' ? "ENG-884" : "MGR-102"} 
+                      className="w-full bg-[#353534] border border-transparent focus:bg-[#393939] focus:border-white/20 rounded-sm py-4 px-4 outline-none transition-all font-mono text-white placeholder:text-neutral-600" 
+                    />
                   </div>
                 ) : null}
 
                 <div>
                   <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-3">{view === 'login-engineer' ? 'Auth PIN' : 'Security Clearance Key'}</label>
-                  <input type="password" required placeholder="••••••••" className="w-full bg-[#353534] border border-transparent focus:bg-[#393939] focus:border-white/20 rounded-sm py-4 px-4 outline-none transition-all text-white placeholder:text-neutral-600" />
+                  <input 
+                    type="password" 
+                    required 
+                    id="credential"
+                    name="credential"
+                    placeholder="••••••••" 
+                    className="w-full bg-[#353534] border border-transparent focus:bg-[#393939] focus:border-white/20 rounded-sm py-4 px-4 outline-none transition-all text-white placeholder:text-neutral-600" 
+                  />
                 </div>
                 
                 <button type="submit" className="w-full text-[#1a1c1c] font-bold py-4 rounded-sm bg-white hover:bg-neutral-200 transition-all tracking-tight uppercase mt-6">
@@ -763,7 +1063,7 @@ export default function App() {
                 <div><h2 className="text-4xl font-bold tracking-tighter text-white">Regional Telemetry</h2><p className="text-neutral-400 text-sm mt-2">Live grid data stream.</p></div>
                 <div className="flex flex-col md:flex-row items-end md:items-center gap-6">
                   <div className="flex flex-wrap items-center gap-4">
-                    <button onClick={() => setShowStationModal(true)} className="bg-[#2a2a2a] hover:bg-[#353534] text-white px-6 py-3 rounded-sm text-xs font-bold uppercase tracking-tight flex items-center gap-3 transition-colors"><PlusCircle className="w-4 h-4" /> Add Station</button>
+                    <button onClick={() => { setShowAddSubstationModal(true); setIsAddMode(true); }} className="bg-[#2a2a2a] hover:bg-[#353534] text-white px-6 py-3 rounded-sm text-xs font-bold uppercase tracking-tight flex items-center gap-3 transition-colors"><PlusCircle className="w-4 h-4" /> Add Station</button>
                     <button onClick={() => setShowEngineerModal(true)} className="bg-[#2a2a2a] hover:bg-[#353534] text-white px-6 py-3 rounded-sm text-xs font-bold uppercase tracking-tight flex items-center gap-3 transition-colors"><UserPlus className="w-4 h-4" /> Add Engineer</button>
                     <button onClick={handleGenerateReport} className="bg-[#2a2a2a] hover:bg-[#353534] text-white px-6 py-3 rounded-sm text-xs font-bold uppercase tracking-tight flex items-center gap-3 transition-colors"><FileText className="w-4 h-4" /> Reports</button>
                   </div>
@@ -783,7 +1083,7 @@ export default function App() {
               <div className="flex-1 min-h-125 grid grid-cols-1 xl:grid-cols-3 gap-8">
                 <div className="xl:col-span-2 bg-[#0e0e0e] rounded-sm flex flex-col relative overflow-hidden min-h-125 p-1 border border-[#474747]/15">
                   <div className="absolute top-6 left-6 z-20 pointer-events-none"><h3 className="text-[11px] font-medium tracking-widest uppercase text-neutral-400">Tactical GIS Mapping</h3></div>
-                  {leafletReady && selectedState ? <LeafletMap selectedState={selectedState} substations={substations} selectedSubstationId={selectedSubstationId} onSelectSubstation={setSelectedSubstationId} /> : <div className="w-full h-full flex items-center justify-center text-neutral-500"><Activity className="w-6 h-6 animate-spin text-neutral-600"/></div>}
+                  {leafletReady && selectedState ? <LeafletMap selectedState={selectedState} substations={substations} selectedSubstationId={selectedSubstationId} onSelectSubstation={setSelectedSubstationId} isAddMode={isAddMode} onMapClick={handleMapClick} tempMarkerPos={tempMarkerPos} /> : <div className="w-full h-full flex items-center justify-center text-neutral-500"><Activity className="w-6 h-6 animate-spin text-neutral-600"/></div>}
                 </div>
                 <div className="xl:col-span-1 flex flex-col h-full bg-[#1c1b1b] rounded-sm overflow-hidden relative">
                   <AnimatePresence mode="wait">
@@ -827,6 +1127,212 @@ export default function App() {
           </motion.div>
         )}
 
+      </AnimatePresence>
+
+      {/* ADD SUBSTATION MODAL - Outside main view switcher */}
+      <AnimatePresence>
+        {showAddSubstationModal && (
+            <motion.div
+              key="add-substation-modal"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 z-40 bg-[#131313] flex"
+            >
+              {/* Map pane */}
+              <motion.div initial={{ x: -100, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -100, opacity: 0 }} className="flex-1 hidden md:flex flex-col relative">
+                {leafletReady && selectedState ? (
+                  <LeafletMap
+                    selectedState={selectedState}
+                    substations={substations}
+                    selectedSubstationId={selectedSubstationId}
+                    onSelectSubstation={setSelectedSubstationId}
+                    isAddMode={true}
+                    onMapClick={handleMapClick}
+                    tempMarkerPos={tempMarkerPos}
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-neutral-500">
+                    <Activity className="w-6 h-6 animate-spin" />
+                  </div>
+                )}
+                <div className="absolute top-6 left-6 z-20 pointer-events-none">
+                  <h3 className="text-[11px] font-medium tracking-widest uppercase text-neutral-400 bg-black/50 px-3 py-2 rounded">
+                    Click map to select location
+                  </h3>
+                </div>
+              </motion.div>
+
+              {/* Form pane */}
+              <motion.div
+                initial={{ x: 100, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 100, opacity: 0 }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full md:w-96 bg-[#1c1b1b] border-l border-[#474747]/15 flex flex-col p-6"
+              >
+                <div className="flex items-center justify-between mb-6 shrink-0">
+                  <h3 className="text-xl font-bold text-white tracking-tighter">Add Substation</h3>
+                  <button onClick={closeAddSubstationModal} className="text-neutral-500 hover:text-white transition-colors text-lg">✕</button>
+                </div>
+
+                <form onSubmit={handleAddSubstationSubmit} className="flex-1 flex flex-col gap-4 overflow-y-auto">
+                  <div className="space-y-4">
+                    {[
+                      { label: 'Name', key: 'name', placeholder: 'e.g., Northern Hub' },
+                      { label: 'Location', key: 'location', placeholder: 'e.g., Sector 5' }
+                    ].map(({ label, key, placeholder }) => (
+                      <div key={key}>
+                        <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-2">{label}</label>
+                        <input type="text" required placeholder={placeholder}
+                          value={addFormData[key as keyof typeof addFormData]}
+                          onChange={(e) => setAddFormData({ ...addFormData, [key]: e.target.value })}
+                          className="w-full bg-[#353534] focus:bg-[#393939] focus:outline-none transition-all py-2 px-3 text-white placeholder:text-neutral-600 rounded-sm text-sm"
+                        />
+                      </div>
+                    ))}
+
+                    <div className="bg-[#0e0e0e] p-3 rounded-sm border border-blue-500/30 text-xs text-blue-300 space-y-1">
+                      <p className="font-semibold">Location Methods:</p>
+                      <p>✓ Click map to set coordinates</p>
+                      <p>✓ Or enter manually below</p>
+                      {tempMarkerPos && <p className="text-green-400">📍 Location selected!</p>}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { label: 'Lat', key: 'lat', placeholder: '28.7041' },
+                        { label: 'Lon', key: 'lon', placeholder: '77.1025' }
+                      ].map(({ label, key, placeholder }) => (
+                        <div key={key}>
+                          <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-1">{label}</label>
+                          <input type="number" required step="0.000001" placeholder={placeholder}
+                            value={addFormData[key as keyof typeof addFormData]}
+                            onChange={(e) => setAddFormData({ ...addFormData, [key]: e.target.value })}
+                            className="w-full bg-[#353534] focus:bg-[#393939] focus:outline-none transition-all py-2 px-3 text-white placeholder:text-neutral-600 rounded-sm text-xs"
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    {[
+                      { label: 'Current Load (MW)', key: 'currentLoadMw', placeholder: '50' },
+                      { label: 'Max Capacity (MW)', key: 'maxCapacityMw', placeholder: '150' },
+                      { label: 'Voltage (kV)', key: 'voltage', placeholder: '132' }
+                    ].map(({ label, key, placeholder }) => (
+                      <div key={key}>
+                        <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-2">{label}</label>
+                        <input type="number" required min="0" placeholder={placeholder}
+                          value={addFormData[key as keyof typeof addFormData]}
+                          onChange={(e) => setAddFormData({ ...addFormData, [key]: e.target.value })}
+                          className="w-full bg-[#353534] focus:bg-[#393939] focus:outline-none transition-all py-2 px-3 text-white placeholder:text-neutral-600 rounded-sm text-sm"
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex gap-3 mt-auto pt-4 border-t border-[#474747]/15 shrink-0">
+                    <button type="button" onClick={closeAddSubstationModal}
+                      className="flex-1 bg-[#2a2a2a] hover:bg-[#353534] text-white py-2 px-3 rounded-sm transition-all tracking-tight uppercase text-xs font-bold">
+                      Cancel
+                    </button>
+                    <button type="submit"
+                      className="flex-1 bg-white hover:bg-neutral-100 text-[#1a1c1c] font-bold py-2 px-3 rounded-sm transition-all tracking-tight uppercase text-xs">
+                      Create
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+      {/* ADD ENGINEER MODAL - Outside main view switcher */}
+      <AnimatePresence>
+        {showEngineerModal && (
+          <motion.div
+            key="add-engineer-modal"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm flex items-center justify-center"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-[#1c1b1b] border border-[#474747]/15 rounded-sm p-8"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-bold text-white tracking-tighter">Add Engineer</h3>
+                <button onClick={closeEngineerModal} className="text-neutral-500 hover:text-white transition-colors text-lg">✕</button>
+              </div>
+
+              <form onSubmit={handleAddEngineer} className="space-y-4">
+                <div>
+                  <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-2">Engineer Name</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g., Rajesh Kumar"
+                    value={engineerFormData.name}
+                    onChange={(e) => setEngineerFormData({ ...engineerFormData, name: e.target.value })}
+                    className="w-full bg-[#353534] focus:bg-[#393939] focus:outline-none transition-all py-2 px-3 text-white placeholder:text-neutral-600 rounded-sm text-sm"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-2">Email Address</label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="e.g., rajesh@example.com"
+                    value={engineerFormData.email}
+                    onChange={(e) => setEngineerFormData({ ...engineerFormData, email: e.target.value })}
+                    className="w-full bg-[#353534] focus:bg-[#393939] focus:outline-none transition-all py-2 px-3 text-white placeholder:text-neutral-600 rounded-sm text-sm"
+                  />
+                  <p className="text-[11px] text-neutral-500 mt-2">Credentials will be sent to this email</p>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-2">Assigned Region</label>
+                  <select
+                    required
+                    value={engineerFormData.region}
+                    onChange={(e) => setEngineerFormData({ ...engineerFormData, region: e.target.value })}
+                    className="w-full bg-[#353534] focus:bg-[#393939] focus:outline-none transition-all py-2 px-3 text-white rounded-sm text-sm appearance-none cursor-pointer"
+                  >
+                    <option value="">Select a region</option>
+                    {mapData?.map((state) => (
+                      <option key={state.id} value={state.name}>{state.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="bg-[#0e0e0e] p-3 rounded-sm border border-blue-500/30 text-xs text-blue-300 space-y-1 mt-4">
+                  <p className="font-semibold">Automatic Credential Generation:</p>
+                  <p>✓ Badge ID will be auto-generated (ENG-XXX)</p>
+                  <p>✓ Auth PIN will be auto-generated (6 digits)</p>
+                  <p>✓ Credentials sent via email</p>
+                </div>
+
+                <div className="flex gap-3 mt-6 pt-4 border-t border-[#474747]/15">
+                  <button
+                    type="button"
+                    onClick={closeEngineerModal}
+                    className="flex-1 bg-[#2a2a2a] hover:bg-[#353534] text-white py-2 px-3 rounded-sm transition-all tracking-tight uppercase text-xs font-bold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingEngineer}
+                    className="flex-1 bg-white hover:bg-neutral-100 disabled:bg-neutral-500 text-[#1a1c1c] font-bold py-2 px-3 rounded-sm transition-all tracking-tight uppercase text-xs"
+                  >
+                    {isSubmittingEngineer ? 'Creating...' : 'Create & Send'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
     </div>
   );
