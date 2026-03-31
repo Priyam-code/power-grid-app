@@ -30,6 +30,13 @@ interface LeaveRequest {
   submittedAt: string;
 }
 
+interface LogEntry {
+  id: string;
+  timestamp: Date;
+  message: string;
+  type: 'info' | 'warning' | 'critical' | 'success';
+}
+
 interface Substation {
   id: string;
   name: string;
@@ -40,6 +47,7 @@ interface Substation {
   maxCapacityMW: number;
   status: 'stable' | 'warning' | 'critical';
   voltage: number;
+  logs: LogEntry[];
 }
 
 interface SmartMeter {
@@ -263,6 +271,7 @@ export default function ManagerDashboardPage() {
   const [showAddSubstationModal, setShowAddSubstationModal] = useState(false);
   const [isAddMode, setIsAddMode] = useState(false);
   const [tempMarkerPos, setTempMarkerPos] = useState<[number, number] | null>(null);
+  const [subStationChanges, setSubstationChanges] = useState<Map<string, Partial<Substation>>>(new Map());
   const [addFormData, setAddFormData] = useState({
     name: '',
     location: '',
@@ -424,8 +433,14 @@ export default function ManagerDashboardPage() {
         });
         if (!res.ok) throw new Error();
         const payload = await res.json();
-        const subs: Substation[] = Array.isArray(payload.data) ? payload.data : [];
+        const subs: Substation[] = (Array.isArray(payload.data) ? payload.data : []).map((sub: any) => ({
+          ...sub,
+          logs: [
+            { id: `init-${sub.id}`, timestamp: new Date(sub.createdAt), message: 'Telemetry Sync Established', type: 'info' as const }
+          ]
+        }));
         setSubstations(subs);
+        setSubstationChanges(new Map());
 
         // Cache for offline fallback
         localStorage.setItem('substationsCache', JSON.stringify(subs));
@@ -474,6 +489,59 @@ export default function ManagerDashboardPage() {
     });
     setSmartMeters(meters);
   }, [view]);
+
+  // ── Dynamic load updates every 3 seconds ────────────────────────────────────
+  useEffect(() => {
+    if (view !== 'manager-portal' || substations.length === 0) return;
+
+    const interval = setInterval(() => {
+      let newlyTriggeredAlerts: AppAlert[] = [];
+
+      setSubstations(prev => prev.map(sub => {
+        const loadFluctuation = Math.floor((Math.random() - 0.5) * 8);
+        let newLoad = Math.max(10, Math.min(sub.maxCapacityMW + 10, sub.currentLoadMW + loadFluctuation));
+
+        const loadPercentage = (newLoad / sub.maxCapacityMW) * 100;
+        let newStatus: 'stable' | 'warning' | 'critical' = sub.status;
+        let newLogs = [...sub.logs];
+
+        if (loadPercentage >= 85 && sub.status === 'stable') {
+          newStatus = 'critical';
+          newLogs.unshift({
+            id: Math.random().toString(),
+            timestamp: new Date(),
+            message: `CRITICAL: Load exceeded safe threshold (${loadPercentage.toFixed(1)}%)`,
+            type: 'critical'
+          });
+          newlyTriggeredAlerts.push({
+            id: Math.random().toString(),
+            message: `CRITICAL ALERT: ${sub.name} exceeded max capacity (${loadPercentage.toFixed(1)}%)!`,
+            type: 'critical'
+          });
+        } else if (loadPercentage < 80 && (sub.status === 'warning' || sub.status === 'critical')) {
+          newStatus = 'stable';
+          newLogs.unshift({
+            id: Math.random().toString(),
+            timestamp: new Date(),
+            message: 'Load returned to nominal levels',
+            type: 'info'
+          });
+        }
+
+        if (newLogs.length > 15) newLogs = newLogs.slice(0, 15);
+        return { ...sub, currentLoadMW: newLoad, status: newStatus, logs: newLogs };
+      }));
+
+      if (newlyTriggeredAlerts.length > 0) {
+        setActiveAlerts(prev => [...prev, ...newlyTriggeredAlerts]);
+        setTimeout(() => {
+          setActiveAlerts(prev => prev.filter(a => !newlyTriggeredAlerts.find(n => n.id === a.id)));
+        }, 6000);
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [view, substations.length]);
 
   // ── Utilities ───────────────────────────────────────────────────────────────
 
@@ -564,17 +632,85 @@ export default function ManagerDashboardPage() {
     router.push('/');
   };
 
-  const handleClockOut = () => {
+  const handleClockOut = async () => {
     localStorage.removeItem('managerId');
     localStorage.removeItem('managerRegion');
+    await syncChangesToDatabase();
     localStorage.removeItem('managerStateId');
     setManagerId(''); setRegion(''); setLoginStateId('');
     setView('login-manager');
     pushAlert('Session terminated.', 'info');
   };
 
+  const syncChangesToDatabase = async () => {
+    if (subStationChanges.size === 0) return;
+
+    const keyMap: Record<string, string> = {
+      maxCapacityMW: 'maxCapacityMw',
+      status: 'status',
+    };
+
+    const translateKeys = (changes: Partial<Substation>): Record<string, any> => {
+      const translated: Record<string, any> = {};
+      for (const [key, value] of Object.entries(changes)) {
+        const mappedKey = keyMap[key];
+        if (mappedKey !== undefined) translated[mappedKey] = value;
+      }
+      return translated;
+    };
+
+    try {
+      const syncPromises: Array<Promise<{ substationId: string; success: boolean; response: Response | null }>> = [];
+
+      subStationChanges.forEach((changes, substationId) => {
+        const translatedChanges = translateKeys(changes);
+        if (Object.keys(translatedChanges).length === 0) return;
+
+        syncPromises.push(
+          fetch('/api/substations', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: substationId, ...translatedChanges }),
+          })
+            .then(response => ({ substationId, success: response.ok, response }))
+            .catch(err => {
+              console.error('Fetch failed for substation ' + substationId + ':', err);
+              return { substationId, success: false, response: null };
+            })
+        );
+      });
+
+      if (syncPromises.length > 0) {
+        await Promise.all(syncPromises);
+        setSubstationChanges(new Map());
+      }
+    } catch (err) {
+      console.error('Error syncing:', err);
+    }
+  };
+
   const updateSubstationCapacity = (id: string, newCapacity: number) => {
-    setSubstations((prev) => prev.map((s) => s.id === id ? { ...s, maxCapacityMW: newCapacity } : s));
+    setSubstations(prev => prev.map(sub => {
+      if (sub.id === id) {
+        const newLogs = [{
+          id: Math.random().toString(),
+          timestamp: new Date(),
+          message: `CONFIG: Max Capacity adjusted to ${newCapacity} MW`,
+          type: 'info' as const
+        }, ...sub.logs].slice(0, 15);
+        
+        // Track change for database sync
+        setSubstationChanges(prev => {
+          const existing = prev.get(id) || {};
+          const updated = new Map(prev);
+          updated.set(id, { ...existing, maxCapacityMW: newCapacity });
+          return updated;
+        });
+        
+        return { ...sub, maxCapacityMW: newCapacity, logs: newLogs };
+      }
+      return sub;
+    }));
   };
 
   const handlePrevSubstation = () => {
@@ -865,6 +1001,20 @@ export default function ManagerDashboardPage() {
                                 <span>50 MW</span>
                                 <span className="text-white">{selectedSubstation.maxCapacityMW} MW</span>
                                 <span>500 MW</span>
+                              </div>
+                            </div>
+
+                            <div className="bg-[#0e0e0e] p-6 rounded-sm flex-1 flex flex-col min-h-50">
+                              <h4 className="text-[11px] font-medium text-neutral-400 uppercase tracking-widest mb-4">Terminal Logs</h4>
+                              <div className="space-y-4 overflow-y-auto pr-2 flex-1">
+                                {selectedSubstation.logs.map((log) => (
+                                  <div key={log.id} className="flex flex-col">
+                                    <p className={`text-sm leading-relaxed mb-1 ${log.type === 'critical' ? 'text-red-400 font-medium' : log.type === 'success' ? 'text-white' : 'text-neutral-400'}`}>
+                                      {log.message}
+                                    </p>
+                                    <span className="text-neutral-600 font-mono text-[10px]">{log.timestamp.toLocaleTimeString()}</span>
+                                  </div>
+                                ))}
                               </div>
                             </div>
                           </motion.div>

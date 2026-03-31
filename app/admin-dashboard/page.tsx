@@ -1074,9 +1074,10 @@ const syncChangesToDatabase = async () => {
                 </div>
               </header>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12 shrink-0">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-12 shrink-0">
                 <div className="bg-[#1c1b1b] p-8 rounded-sm"><p className="text-[11px] text-neutral-500 mb-4 font-medium uppercase tracking-widest">Regional Load</p><h4 className="text-4xl font-bold tracking-tighter text-white mb-6">{selectedState?.load}%</h4><div className="h-1 w-full bg-[#0e0e0e] rounded-sm overflow-hidden"><div className="h-full bg-white w-[65%]" /></div></div>
                 <div className="bg-[#1c1b1b] p-8 rounded-sm"><p className="text-[11px] text-neutral-500 mb-4 font-medium uppercase tracking-widest">Active Nodes</p><h4 className="text-4xl font-bold tracking-tighter text-white mb-6">{substations.length}</h4><div className="h-1 w-full bg-[#0e0e0e] rounded-sm overflow-hidden"><div className="h-full bg-white w-full" /></div></div>
+                <div className="bg-[#1c1b1b] p-8 rounded-sm"><p className="text-[11px] text-neutral-500 mb-4 font-medium uppercase tracking-widest">Node Health (Avg Load)</p><h4 className="text-4xl font-bold tracking-tighter text-white mb-6">{substations.length > 0 ? Math.round(substations.reduce((s, sub) => s + sub.currentLoadMW, 0) / substations.length) : 0}<span className="text-xl text-neutral-500 tracking-normal"> MW</span></h4><div className="h-1 w-full bg-[#0e0e0e] rounded-sm overflow-hidden"><div className="h-full bg-white w-[45%]" /></div></div>
                 <div className="bg-[#1c1b1b] p-8 rounded-sm"><p className="text-[11px] text-neutral-500 mb-4 font-medium uppercase tracking-widest">Warnings</p><h4 className={`text-4xl font-bold tracking-tighter mb-6 ${substations.some((s:any) => s.status === 'warning' || s.status === 'critical') ? 'text-red-500' : 'text-white'}`}>{substations.filter((s:any) => s.status === 'warning' || s.status === 'critical').length.toString().padStart(2, '0')}</h4><div className="h-1 w-full bg-[#0e0e0e] rounded-sm overflow-hidden"><div className={`h-full ${substations.some((s:any) => s.status === 'warning' || s.status === 'critical') ? 'bg-red-500 w-full' : 'bg-white w-[5%]'}`} /></div></div>
               </div>
 
