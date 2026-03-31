@@ -13,6 +13,7 @@ const STATES = [
   'Assam',
   'Bihar',
   'Chhattisgarh',
+  'Delhi',
   'Goa',
   'Gujarat',
   'Haryana',
@@ -35,7 +36,14 @@ const STATES = [
   'Tripura',
   'Uttar Pradesh',
   'Uttarakhand',
-  'West Bengal'
+  'West Bengal',
+  'Andaman and Nicobar Islands',
+  'Chandigarh',
+  'Dadra and Nagar Haveli and Daman and Diu',
+  'Jammu and Kashmir',
+  'Ladakh',
+  'Lakshadweep',
+  'Puducherry'
 ];
 
 interface EngineerLoginProps {
