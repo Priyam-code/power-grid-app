@@ -28,38 +28,44 @@ const mapLeaveRow = (row: any) => ({
 export async function GET(request: NextRequest) {
 	try {
 		const { searchParams } = new URL(request.url);
-		const engineerEmail = searchParams.get('engineerEmail');
+		const badgeId = searchParams.get('badgeId');
 
-		const rows = engineerEmail
-			? await sql`
-					SELECT
-						id,
-						engineer_email,
-						start_date,
-						end_date,
-						reason,
-						status,
-						submitted_at,
-						reviewed_at,
-						reviewed_by_id
-					FROM leave_requests
-					WHERE engineer_email = ${engineerEmail}
-					ORDER BY submitted_at DESC
-				`
-			: await sql`
-					SELECT
-						id,
-						engineer_email,
-						start_date,
-						end_date,
-						reason,
-						status,
-						submitted_at,
-						reviewed_at,
-						reviewed_by_id
-					FROM leave_requests
-					ORDER BY submitted_at DESC
-				`;
+		if (!badgeId) {
+			return NextResponse.json(
+				{ error: 'badgeId parameter is required' },
+				{ status: 400 }
+			);
+		}
+
+		// First, get the engineer's email from badge ID
+		const engineerResult = await sql`
+			SELECT id, email FROM engineers WHERE badge_id = ${badgeId}
+		`;
+
+		if (engineerResult.length === 0) {
+			return NextResponse.json(
+				{ error: 'Engineer not found' },
+				{ status: 404 }
+			);
+		}
+
+		const engineerEmail = engineerResult[0].email;
+
+		const rows = await sql`
+				SELECT
+					id,
+					engineer_email,
+					start_date,
+					end_date,
+					reason,
+					status,
+					submitted_at,
+					reviewed_at,
+					reviewed_by_id
+				FROM leave_requests
+				WHERE engineer_email = ${engineerEmail}
+				ORDER BY submitted_at DESC
+			`;
 
 		return NextResponse.json({ data: rows.map(mapLeaveRow) });
 	} catch (error) {
@@ -74,18 +80,32 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
 	try {
 		const body = await request.json();
-		const engineerEmail = String(body.engineerEmail || '').trim().toLowerCase();
+		const badgeId = String(body.badgeId || '').trim();
+		const engineerName = String(body.engineerName || '').trim();
 		const startDate = String(body.startDate || '').trim();
 		const endDate = String(body.endDate || '').trim();
 		const reason = String(body.reason || '').trim();
 
-		if (!engineerEmail || !startDate || !endDate || !reason) {
+		if (!badgeId || !startDate || !endDate || !reason) {
 			return NextResponse.json(
-				{ error: 'engineerEmail, startDate, endDate, and reason are required' },
+				{ error: 'badgeId, startDate, endDate, and reason are required' },
 				{ status: 400 }
 			);
 		}
 
+		// Get engineer email from badge ID
+		const engineerResult = await sql`
+			SELECT id, email FROM engineers WHERE badge_id = ${badgeId}
+		`;
+
+		if (engineerResult.length === 0) {
+			return NextResponse.json(
+				{ error: 'Engineer not found' },
+				{ status: 404 }
+			);
+		}
+
+		const engineerEmail = engineerResult[0].email;
 		const id = `lv-${crypto.randomUUID()}`;
 
 		const [created] = await sql`

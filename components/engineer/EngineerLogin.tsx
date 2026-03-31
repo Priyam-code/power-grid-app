@@ -48,21 +48,21 @@ const STATES = [
 
 interface EngineerLoginProps {
   region: string;
-  engineerEmail: string;
-  engineerName: string;
+  badgeId: string;
+  credential: string;
   onRegionChange: (value: string) => void;
-  onEmailChange: (value: string) => void;
-  onNameChange: (value: string) => void;
+  onBadgeIdChange: (value: string) => void;
+  onCredentialChange: (value: string) => void;
   onSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
 }
 
 export default function EngineerLogin({
   region,
-  engineerEmail,
-  engineerName,
+  badgeId,
+  credential,
   onRegionChange,
-  onEmailChange,
-  onNameChange,
+  onBadgeIdChange,
+  onCredentialChange,
   onSubmit
 }: EngineerLoginProps) {
   const router = useRouter();
@@ -105,24 +105,26 @@ export default function EngineerLogin({
             </select>
           </div>
           <div>
-            <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-3">Engineer Email</label>
+            <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-3">Technician Badge</label>
             <input
-              type="email"
+              type="text"
               required
-              value={engineerEmail}
-              onChange={(e) => onEmailChange(e.target.value)}
-              placeholder="engineer@grid.com"
+              name="badgeId"
+              value={badgeId}
+              onChange={(e) => onBadgeIdChange(e.target.value)}
+              placeholder="ENG-884"
               className="w-full bg-[#353534] border border-transparent focus:bg-[#393939] focus:border-white/20 rounded-sm py-4 px-4 outline-none transition-all font-mono text-white placeholder:text-neutral-600"
             />
           </div>
           <div>
-            <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-3">Name</label>
+            <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-3">Auth PIN</label>
             <input
-              type="text"
+              type="password"
               required
-              value={engineerName}
-              onChange={(e) => onNameChange(e.target.value)}
-              placeholder="Ramesh Kumar"
+              name="credential"
+              value={credential}
+              onChange={(e) => onCredentialChange(e.target.value)}
+              placeholder="••••••••"
               className="w-full bg-[#353534] border border-transparent focus:bg-[#393939] focus:border-white/20 rounded-sm py-4 px-4 outline-none transition-all text-white placeholder:text-neutral-600"
             />
           </div>

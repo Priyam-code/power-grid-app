@@ -31,15 +31,15 @@ type EngineerTask = {
 type AppAlert = { id: string; message: string; type: 'critical' | 'success' | 'info' };
 
 interface EngineerDashboardProps {
-  engineerEmail: string;
   engineerName: string;
+  badgeId: string;
   region: string;
   onClockOut: () => void;
 }
 
 export default function EngineerDashboard({
-  engineerEmail,
   engineerName,
+  badgeId,
   region,
   onClockOut
 }: EngineerDashboardProps) {
@@ -49,24 +49,7 @@ export default function EngineerDashboard({
   const [leaveRequestsLoading, setLeaveRequestsLoading] = useState(false);
   const [leaveForm, setLeaveForm] = useState({ start: '', end: '', reason: '' });
 
-  const [engTasks, setEngTasks] = useState<EngineerTask[]>([
-    {
-      id: 'tsk-001',
-      location: 'Substation Alpha',
-      description: 'Transformer Oil Temp Critical',
-      severity: 'critical',
-      status: 'pending',
-      timestamp: new Date(Date.now() - 3600000)
-    },
-    {
-      id: 'tsk-002',
-      location: 'Sector 42 Relay',
-      description: 'Phase B Voltage Drop',
-      severity: 'medium',
-      status: 'pending',
-      timestamp: new Date(Date.now() - 7200000)
-    }
-  ]);
+  const [engTasks, setEngTasks] = useState<EngineerTask[]>([]);
 
   const pushAlert = (message: string, type: 'critical' | 'success' | 'info') => {
     const id = Math.random().toString();
@@ -88,7 +71,7 @@ export default function EngineerDashboard({
     const loadLeaves = async () => {
       try {
         setLeaveRequestsLoading(true);
-        const response = await fetch(`/api/leave-requests?engineerEmail=${encodeURIComponent(engineerEmail)}`, {
+        const response = await fetch(`/api/leave-requests?badgeId=${encodeURIComponent(badgeId)}`, {
           cache: 'no-store'
         });
 
@@ -106,10 +89,10 @@ export default function EngineerDashboard({
       }
     };
 
-    if (engineerEmail) {
+    if (badgeId) {
       loadLeaves();
     }
-  }, [engineerEmail]);
+  }, [badgeId]);
 
   const handleResolveTask = (taskId: string) => {
     setEngTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: 'completed' } : t)));
@@ -118,14 +101,15 @@ export default function EngineerDashboard({
 
   const handleLeaveSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!leaveForm.start || !leaveForm.end || !leaveForm.reason || !engineerEmail) return;
+    if (!leaveForm.start || !leaveForm.end || !leaveForm.reason || !badgeId) return;
 
     try {
       const response = await fetch('/api/leave-requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          engineerEmail,
+          badgeId,
+          engineerName,
           startDate: new Date(`${leaveForm.start}T00:00:00Z`).toISOString(),
           endDate: new Date(`${leaveForm.end}T00:00:00Z`).toISOString(),
           reason: leaveForm.reason.trim()
@@ -232,7 +216,7 @@ export default function EngineerDashboard({
               <div className={styles.profileHeader}>
                 <div className={styles.profileInfo}>
                   <h2>{engineerName || 'Engineer'}</h2>
-                  <p className={styles.profileEmail}>{engineerEmail}</p>
+                  <p className={styles.profileEmail}>{badgeId}</p>
                   <span className={styles.profileRole}>Field Engineer</span>
                 </div>
               </div>

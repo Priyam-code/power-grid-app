@@ -13,19 +13,20 @@ function EngineerPageContent() {
   const searchParams = useSearchParams();
 
   const [view, setView] = useState<ViewState>('login-engineer');
-  const [engineerEmail, setEngineerEmail] = useState('');
+  const [badgeId, setBadgeId] = useState('');
+  const [credential, setCredential] = useState('');
   const [engineerName, setEngineerName] = useState('');
   const [region, setRegion] = useState('');
   const [isHydrated, setIsHydrated] = useState(false);
 
-  // On mount, restore credentials from localStorage and check URL params
+  // On mount, restore credentials from localStorage
   useEffect(() => {
-    const savedEmail = localStorage.getItem('engineerEmail') || '';
+    const savedBadgeId = localStorage.getItem('engineerBadgeId') || '';
     const savedName = localStorage.getItem('engineerName') || '';
     const savedRegion = localStorage.getItem('engineerRegion') || '';
 
-    if (savedEmail && savedName && savedRegion) {
-      setEngineerEmail(savedEmail);
+    if (savedBadgeId && savedName && savedRegion) {
+      setBadgeId(savedBadgeId);
       setEngineerName(savedName);
       setRegion(savedRegion);
       setView('engineer-portal');
@@ -34,28 +35,48 @@ function EngineerPageContent() {
     setIsHydrated(true);
   }, []);
 
-  const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!engineerEmail || !engineerName || !region) return;
+    if (!badgeId || !credential || !region) return;
 
-    const trimmedEmail = engineerEmail.trim().toLowerCase();
-    const trimmedName = engineerName.trim();
+    try {
+      const res = await fetch('/api/engineers/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ badgeId, credential, region })
+      });
 
-    localStorage.setItem('engineerEmail', trimmedEmail);
-    localStorage.setItem('engineerName', trimmedName);
-    localStorage.setItem('engineerRegion', region);
+      if (!res.ok) {
+        const error = await res.json();
+        alert(error.error || 'Invalid credentials');
+        return;
+      }
 
-    setEngineerEmail(trimmedEmail);
-    setEngineerName(trimmedName);
-    setView('engineer-portal');
+      const result = await res.json();
+      const engineer = result.data;
+
+      localStorage.setItem('engineerBadgeId', engineer.badgeId);
+      localStorage.setItem('engineerName', engineer.name);
+      localStorage.setItem('engineerRegion', engineer.region);
+
+      setBadgeId(engineer.badgeId);
+      setEngineerName(engineer.name);
+      setRegion(engineer.region);
+      setCredential('');
+      setView('engineer-portal');
+    } catch (err) {
+      console.error('Login error:', err);
+      alert('Login failed, please try again');
+    }
   };
 
   const handleClockOut = () => {
-    localStorage.removeItem('engineerEmail');
+    localStorage.removeItem('engineerBadgeId');
     localStorage.removeItem('engineerName');
     localStorage.removeItem('engineerRegion');
     
-    setEngineerEmail('');
+    setBadgeId('');
+    setCredential('');
     setEngineerName('');
     setRegion('');
     setView('login-engineer');
@@ -71,18 +92,18 @@ function EngineerPageContent() {
         {view === 'login-engineer' && (
           <EngineerLogin
             region={region}
-            engineerEmail={engineerEmail}
-            engineerName={engineerName}
+            badgeId={badgeId}
+            credential={credential}
             onRegionChange={setRegion}
-            onEmailChange={setEngineerEmail}
-            onNameChange={setEngineerName}
+            onBadgeIdChange={setBadgeId}
+            onCredentialChange={setCredential}
             onSubmit={handleLogin}
           />
         )}
         {view === 'engineer-portal' && (
           <EngineerDashboard
-            engineerEmail={engineerEmail}
             engineerName={engineerName}
+            badgeId={badgeId}
             region={region}
             onClockOut={handleClockOut}
           />
