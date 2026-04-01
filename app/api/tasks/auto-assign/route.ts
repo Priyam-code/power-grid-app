@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import sql from '@/db/db';
 import nodemailer from 'nodemailer';
+import crypto from 'crypto'; 
 
 const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
@@ -18,10 +19,6 @@ export async function POST(request: NextRequest) {
 
         const safeSeverity = (severity || 'CRITICAL').toUpperCase();
 
-        // ATOMIC "LEAST BUSY" DISPATCH LOGIC
-        // 1. We join engineers with their current pending tasks.
-        // 2. We sort by the number of tasks they currently have (ASC).
-        // 3. We ensure the location doesn't already have a pending task.
         const result: any = await sql`
             INSERT INTO engineer_tasks (
                 id, engineer_badge_id, assignee_email, location, description, severity, status
@@ -47,9 +44,9 @@ export async function POST(request: NextRequest) {
                   WHERE et.location = ${location} AND et.status = 'PENDING'
               )
             GROUP BY e.id, e.badge_id, e.email
-            ORDER BY COUNT(t.id) ASC, e.id ASC -- Sort by least busy, then by ID for stable cycling
+            ORDER BY COUNT(t.id) ASC, e.id ASC
             LIMIT 1
-            RETURNING assignee_email, id
+            RETURNING assignee_email, engineer_badge_id, id 
         `;
 
         const rows = Array.isArray(result) ? result : (result?.rows || []);
@@ -64,24 +61,31 @@ export async function POST(request: NextRequest) {
 
         const assigned = rows[0];
 
-        // Send REAL Gmail Email
-        await transporter.sendMail({
-            from: `"GridOps Alert" <${process.env.ALERT_FROM_EMAIL}>`,
-            to: assigned.assignee_email,
-            subject: `🚨 DISPATCH: ${safeSeverity} Alert at ${location}`,
-            html: `
-                <div style="font-family: Arial, sans-serif; padding: 20px; background: #0a0a0a; color: #fff; border: 1px solid #474747;">
-                    <h2 style="color: #ef4444;">NEW ASSIGNMENT</h2>
-                    <p>You have been assigned to: <strong>${location}</strong></p>
-                    <p><strong>Details:</strong> ${description}</p>
-                    <p style="font-size: 11px; color: #888; margin-top: 20px;">RLDC Automated Dispatch System</p>
-                </div>
-            `
-        });
+        // Safely attempt to send email only if one exists
+        if (assigned.assignee_email) {
+            try {
+                await transporter.sendMail({
+                    from: `"GridOps Alert" <${process.env.ALERT_FROM_EMAIL}>`,
+                    to: assigned.assignee_email,
+                    subject: `🚨 DISPATCH: ${safeSeverity} Alert at ${location}`,
+                    html: `
+                        <div style="font-family: Arial, sans-serif; padding: 20px; background: #0a0a0a; color: #fff; border: 1px solid #474747;">
+                            <h2 style="color: #ef4444;">NEW ASSIGNMENT</h2>
+                            <p>You have been assigned to: <strong>${location}</strong></p>
+                            <p><strong>Details:</strong> ${description}</p>
+                        </div>
+                    `
+                });
+            } catch (emailErr) {
+                console.error("Failed to send email, but task was assigned:", emailErr);
+            }
+        }
 
         return NextResponse.json({ 
             success: true, 
-            assignedTo: assigned.assignee_email,
+            // Fallback to badge ID so the frontend doesn't show "undefined"
+            assignedTo: assigned.assignee_email || assigned.engineer_badge_id || 'System Dispatch',
+            badgeId: assigned.engineer_badge_id,
             taskId: assigned.id
         });
 

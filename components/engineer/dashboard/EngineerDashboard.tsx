@@ -16,23 +16,24 @@ export default function EngineerDashboard({ engineerName, badgeId, region, engin
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // 1. Fetch tasks assigned specifically to this engineer
-const fetchTasks = useCallback(async () => {
-    // DEBUG: See what the email is right before the call
-    console.log("Current Engineer Email:", engineerEmail);
+  // 1. Fetch tasks assigned specifically to this engineer BY BADGE ID
+  const fetchTasks = useCallback(async () => {
+    console.log("Current Engineer Badge ID:", badgeId); // Changed to log badgeId
 
-    if (!engineerEmail || engineerEmail === 'undefined') {
-        console.warn("Fetch aborted: No email found.");
+    if (!badgeId || badgeId === 'undefined') {
+        console.warn("Fetch aborted: No Badge ID found.");
         return;
     }
 
     try {
-      const res = await fetch(`/api/engineer/tasks?email=${encodeURIComponent(engineerEmail)}`);
+      // Changed the API endpoint to use badgeId instead of email
+      // Note: Make sure this URL matches the folder where you put the new API route!
+      const res = await fetch(`/api/tasks?badgeId=${encodeURIComponent(badgeId)}`);
       const result = await res.json();
       
-      console.log("Database Response:", result); // DEBUG: See what the DB says
+      console.log("Database Response:", result);
 
-      if (result.data) {
+      if (result.success && result.data) {
         setTasks(result.data);
       }
     } catch (err) {
@@ -40,7 +41,7 @@ const fetchTasks = useCallback(async () => {
     } finally {
       setLoading(false);
     }
-  }, [engineerEmail]);
+  }, [badgeId]); // Changed dependency from engineerEmail to badgeId
 
   useEffect(() => {
     fetchTasks();
@@ -48,7 +49,7 @@ const fetchTasks = useCallback(async () => {
     return () => clearInterval(interval);
   }, [fetchTasks]);
 
-  // 2. Resolve Task Logic (Option 2)
+  // 2. Resolve Task Logic
   const handleResolve = async (taskId: string) => {
     try {
       const res = await fetch('/api/tasks/resolve', {
@@ -104,7 +105,7 @@ const fetchTasks = useCallback(async () => {
                       <span className="text-[10px] bg-red-500/10 text-red-500 border border-red-500/20 px-2 py-0.5 rounded font-bold uppercase">
                         {task.severity}
                       </span>
-                      <span className="text-neutral-600 font-mono text-[10px] uppercase">{task.id}</span>
+                      <span className="text-neutral-600 font-mono text-[10px] uppercase">{task.id.split('-')[1]}</span>
                     </div>
                     <h4 className="text-xl font-bold text-white flex items-center gap-2">
                       <MapPin className="w-4 h-4 text-neutral-500" /> {task.location}
