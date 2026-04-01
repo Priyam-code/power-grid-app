@@ -78,7 +78,7 @@ function EngineerPageContent() {
     }
   };
 
- const handleClockOut = () => {
+ const handleLogout = () => {
   // Use .clear() to be 100% sure everything is gone
   localStorage.clear(); 
   
@@ -111,7 +111,7 @@ function EngineerPageContent() {
             badgeId={badgeId}
             region={region}
             engineerEmail={engineerEmail} // PASS EMAIL HERE
-            onClockOut={handleClockOut}
+            onLogout={handleLogout}
           />
         )}
       </AnimatePresence>

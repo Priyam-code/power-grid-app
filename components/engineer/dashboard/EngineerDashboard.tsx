@@ -35,7 +35,7 @@ interface EngineerDashboardProps {
   badgeId: string;
   region: string;
   engineerEmail?: string;
-  onClockOut: () => void;
+  onLogout: () => void;
 }
 
 export default function EngineerDashboard({
@@ -43,7 +43,7 @@ export default function EngineerDashboard({
   badgeId,
   region,
   engineerEmail,
-  onClockOut
+  onLogout
 }: EngineerDashboardProps) {
   const [engTab, setEngTab] = useState<EngineerTab>('inbox');
   const [activeAlerts, setActiveAlerts] = useState<AppAlert[]>([]);
@@ -228,19 +228,23 @@ export default function EngineerDashboard({
         <div className={styles.sidebarHeader}>
           <div className={styles.sidebarDot} />
           <div className={styles.sidebarTitle}>
-            <span className={styles.sidebarTitleMain}>Field Ops</span>
+            <span className={styles.sidebarTitleMain}>Urja Setu</span>
             <span className={styles.sidebarTitleSub}>Engineer Portal</span>
           </div>
         </div>
         <nav className={styles.nav}>
           <button onClick={() => setEngTab('inbox')} className={`${styles.navButton} ${engTab === 'inbox' ? styles.navButtonActive : styles.navButtonInactive}`}>
-            <div className="flex items-center gap-4">{engTab === 'inbox' && <span className={styles.navButtonDot} />} Fault Inbox</div>
+            <div className="flex items-center gap-2">{engTab === 'inbox' && <span className={styles.navButtonDot} />}<span>Fault Inbox</span></div>
             {engTasks.filter((t) => t.status === 'pending').length > 0 && <span className={styles.navButtonBadge}>{engTasks.filter((t) => t.status === 'pending').length}</span>}
           </button>
-          <button onClick={() => setEngTab('profile')} className={`${styles.navButton} ${engTab === 'profile' ? styles.navButtonActive : styles.navButtonInactive}`}>{engTab === 'profile' && <span className={styles.navButtonDot} />} My Profile</button>
-          <button onClick={() => setEngTab('leave')} className={`${styles.navButton} ${engTab === 'leave' ? styles.navButtonActive : styles.navButtonInactive}`}>{engTab === 'leave' && <span className={styles.navButtonDot} />} Leave Application</button>
+          <button onClick={() => setEngTab('profile')} className={`${styles.navButton} ${engTab === 'profile' ? styles.navButtonActive : styles.navButtonInactive}`}>
+            <div className="flex items-center gap-2">{engTab === 'profile' && <span className={styles.navButtonDot} />}<span>My Profile</span></div>
+          </button>
+          <button onClick={() => setEngTab('leave')} className={`${styles.navButton} ${engTab === 'leave' ? styles.navButtonActive : styles.navButtonInactive}`}>
+            <div className="flex items-center gap-2">{engTab === 'leave' && <span className={styles.navButtonDot} />}<span>Leave Application</span></div>
+          </button>
         </nav>
-        <button onClick={onClockOut} className={styles.clockOutButton}><LogOut className={styles.clockOutIcon} /><span className={styles.clockOutText}>Clock Out</span></button>
+        <button onClick={onLogout} className={styles.logoutButton}><LogOut className={styles.logoutIcon} /><span className={styles.logoutText}>Logout</span></button>
       </motion.div>
 
       <div className={styles.mainContent}>

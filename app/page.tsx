@@ -30,7 +30,7 @@ export default function Page() {
 		<main className="min-h-screen bg-[#131313] text-white px-6 py-12 md:px-12 md:py-16">
 			<div className="mx-auto max-w-6xl">
 				<header className="mb-10 md:mb-14">
-					<p className="text-[11px] uppercase tracking-[0.2em] text-neutral-500">Power Grid Command</p>
+		<p className="text-[11px] uppercase tracking-[0.2em] text-neutral-500">Urja Setu</p>
 					<h1 className="mt-3 text-4xl md:text-6xl font-bold tracking-tight">Select Your Role</h1>
 					<p className="mt-4 max-w-2xl text-neutral-400">
 						Choose a portal to continue. Engineer and Substation Manager routes open directly to login.

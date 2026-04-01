@@ -85,7 +85,7 @@ export default function EngineerLogin({
       </button>
       <div className="w-full max-w-md">
         <div className="mb-12">
-          <h2 className="text-4xl font-bold text-white mb-4 tracking-tighter">Field Ops Login</h2>
+          <h2 className="text-4xl font-bold text-white mb-4 tracking-tighter">Urja Setu Login</h2>
           <p className="text-neutral-400 font-medium text-sm mb-4">Engineer Dispatch Application</p>
         </div>
 
@@ -130,7 +130,7 @@ export default function EngineerLogin({
           </div>
 
           <button type="submit" className="w-full text-[#1a1c1c] font-bold py-4 rounded-sm bg-white hover:bg-neutral-200 transition-all tracking-tight uppercase mt-6">
-            Clock In
+            Login
           </button>
         </form>
       </div>

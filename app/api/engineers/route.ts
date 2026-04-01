@@ -78,9 +78,9 @@ export async function POST(request: NextRequest) {
       await transporter.sendMail({
         from: process.env.ALERT_FROM_EMAIL,
         to: email,
-        subject: 'Engineer Credentials - Power Grid System',
+        subject: 'Engineer Credentials - Urja Setu',
         html: `
-          <h2>Welcome to Power Grid System</h2>
+          <h2>Welcome to Urja Setu</h2>
           <p>Hello ${name},</p>
           <p>Your engineer account has been created. Use the credentials below to login:</p>
           <div style="background-color: #f0f0f0; padding: 20px; border-radius: 5px; margin: 20px 0;">
