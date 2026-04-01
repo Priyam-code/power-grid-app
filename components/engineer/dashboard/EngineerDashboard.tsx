@@ -34,6 +34,7 @@ interface EngineerDashboardProps {
   engineerName: string;
   badgeId: string;
   region: string;
+  engineerEmail?: string;
   onClockOut: () => void;
 }
 
@@ -41,6 +42,7 @@ export default function EngineerDashboard({
   engineerName,
   badgeId,
   region,
+  engineerEmail,
   onClockOut
 }: EngineerDashboardProps) {
   const [engTab, setEngTab] = useState<EngineerTab>('inbox');
