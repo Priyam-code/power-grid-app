@@ -1,0 +1,184 @@
+.main {
+  height: 100vh;
+  background-color: #131313;
+  color: white;
+  padding: 0;
+  position: relative;
+  overflow: hidden;
+  width: 100vw;
+}
+
+@media (min-width: 768px) {
+  .main {
+    padding: 0;
+  }
+}
+
+.container {
+  margin-top: 120px;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 64rem;
+  width: 100%;
+  position: relative;
+  z-index: 10;
+  padding: 2rem 0.5rem;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+@media (min-width: 768px) {
+  .container {
+    padding: 2rem 1.5rem;
+  }
+}
+
+.header {
+  margin-bottom: 1rem;
+}
+
+.title {
+  margin-top: 0.75rem;
+  font-size: 2.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+@media (min-width: 768px) {
+  .title {
+    font-size: 3.75rem;
+  }
+}
+
+.subtitle {
+  margin-top: 1rem;
+  max-width: 42rem;
+  color: #a3a3a3;
+}
+
+.section {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+
+@media (min-width: 768px) {
+  .section {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.roleCard {
+  position: relative;
+  border-radius: 0.125rem;
+  border: 1px solid rgba(71, 71, 71, 0.3);
+  background-color: #1c1b1b;
+  padding: 1.75rem;
+  transition: all 0.3s ease-in-out;
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+
+.roleCard:hover {
+  border-color: rgba(255, 255, 255, 0.5);
+  background-color: #222;
+}
+
+.iconBox {
+  display: inline-flex;
+  height: 3rem;
+  width: 3rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.125rem;
+  background-color: #0f0f0f;
+  color: #d4d4d8;
+  margin-bottom: 1.5rem;
+}
+
+.roleCard:hover .iconBox {
+  color: white;
+}
+
+.icon {
+  height: 1.5rem;
+  width: 1.5rem;
+}
+
+.roleName {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.roleDescription {
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
+  color: #a3a3a3;
+}
+
+.roleCta {
+  margin-top: 2rem;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #d4d4d8;
+  transition: color 0.3s ease-in-out;
+}
+
+.roleCard:hover .roleCta {
+  color: white;
+}
+
+.bgTextContainer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bgText {
+  font-size: clamp(8rem, 20vw, 28rem);
+  font-family: "Impact", sans-serif;
+  font-weight: 500;
+  color: #171717;
+  opacity: 0.7;
+  line-height: 0.9;
+  white-space: nowrap;
+  text-shadow: 2px 2px 0 #ffffff, -2px -2px 0 #ffffff, 2px -2px 0 #ffffff,
+    -2px 2px 0 #ffffff;
+  transition: all 0.1s ease-out;
+  display: inline-block;
+  margin-bottom: 350px;
+}
+
+.letter {
+  display: inline-block;
+  transition: all 0.15s ease-out;
+  text-shadow: 2px 2px 0 #ffffff, -2px -2px 0 #ffffff, 2px -2px 0 #ffffff,
+    -2px 2px 0 #ffffff;
+}
+
+.letterGlow {
+  text-shadow: 2px 2px 0 #ffffff, -2px -2px 0 #ffffff, 2px -2px 0 #ffffff,
+      -2px 2px 0 #ffffff,
+    0 0 20px rgba(255, 255, 255, 0.8),
+    0 0 40px rgba(255, 255, 255, 0.6),
+    0 0 60px rgba(255, 255, 255, 0.4);
+  color: #ffffff;
+  opacity: 1;
+  transform: scale(1.05);
+}
+
