@@ -1,0 +1,7 @@
+[
+  "function addSubstation(address addr, string name, uint256 threshold)",
+  "function updateSubstationThreshold(address substation, uint256 newThreshold)",
+  "function substations(address) view returns (string name, uint256 threshold, bool active)",
+  "event SubstationAdded(address indexed actor, address indexed substation, string name, uint256 threshold)",
+  "event ThresholdUpdated(address indexed actor, address indexed substation, uint256 newThreshold)"
+]
