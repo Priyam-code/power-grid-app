@@ -1,8 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server';
-import sql from '@/db/db';
+import sql, { getDbErrorDetails, isTransientDbError, queryWithRetry } from '@/db/db';
+
+export const runtime = 'nodejs';
 
 type SubstationStatus = 'stable' | 'warning' | 'critical';
 type DbSubstationStatus = 'STABLE' | 'WARNING' | 'CRITICAL';
+
+let hasWalletAddressColumnCache: boolean | null = null;
+
+const toBooleanLike = (value: unknown): boolean => value === true || value === 't' || value === '1' || value === 1;
+
+const hasWalletAddressColumn = async (): Promise<boolean> => {
+    if (hasWalletAddressColumnCache !== null) {
+        return hasWalletAddressColumnCache;
+    }
+
+    try {
+        const rows = await queryWithRetry(() => sql`
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'substations'
+                  AND column_name = 'wallet_address'
+            ) AS exists
+        `);
+
+        hasWalletAddressColumnCache = toBooleanLike(rows[0]?.exists);
+        return hasWalletAddressColumnCache;
+    } catch {
+        hasWalletAddressColumnCache = false;
+        return hasWalletAddressColumnCache;
+    }
+};
 
 const fromDbStatus = (value: string): SubstationStatus => {
     if (value === 'WARNING') return 'warning';
@@ -19,6 +49,7 @@ const toDbStatus = (value: SubstationStatus): DbSubstationStatus => {
 const mapSubstationRow = (row: any) => ({
     id: String(row.id),
     name: String(row.name),
+    walletAddress: row.wallet_address ? String(row.wallet_address) : null,
     state: String(row.state),
     location: String(row.location),
     lat: Number(row.lat),
@@ -35,53 +66,104 @@ export async function GET(request: NextRequest) {
     try {
         const { searchParams } = new URL(request.url);
         const state = searchParams.get('state');
+        const includeWalletAddress = await hasWalletAddressColumn();
 
         let rows;
         if (state) {
-            rows = await sql`
-                SELECT
-                    id,
-                    name,
-                    state,
-                    location,
-                    lat,
-                    lon,
-                    current_load_mw,
-                    max_capacity_mw,
-                    voltage,
-                    status,
-                    created_at,
-                    updated_at
-                FROM substations
-                WHERE state = ${state}
-                ORDER BY name ASC
-            `;
+            if (includeWalletAddress) {
+                rows = await queryWithRetry(() => sql`
+                    SELECT
+                        id,
+                        name,
+                        wallet_address,
+                        state,
+                        location,
+                        lat,
+                        lon,
+                        current_load_mw,
+                        max_capacity_mw,
+                        voltage,
+                        status,
+                        created_at,
+                        updated_at
+                    FROM substations
+                    WHERE state = ${state}
+                    ORDER BY name ASC
+                `);
+            } else {
+                rows = await queryWithRetry(() => sql`
+                    SELECT
+                        id,
+                        name,
+                        NULL::text AS wallet_address,
+                        state,
+                        location,
+                        lat,
+                        lon,
+                        current_load_mw,
+                        max_capacity_mw,
+                        voltage,
+                        status,
+                        created_at,
+                        updated_at
+                    FROM substations
+                    WHERE state = ${state}
+                    ORDER BY name ASC
+                `);
+            }
         } else {
-            rows = await sql`
-                SELECT
-                    id,
-                    name,
-                    state,
-                    location,
-                    lat,
-                    lon,
-                    current_load_mw,
-                    max_capacity_mw,
-                    voltage,
-                    status,
-                    created_at,
-                    updated_at
-                FROM substations
-                ORDER BY name ASC
-            `;
+            if (includeWalletAddress) {
+                rows = await queryWithRetry(() => sql`
+                    SELECT
+                        id,
+                        name,
+                        wallet_address,
+                        state,
+                        location,
+                        lat,
+                        lon,
+                        current_load_mw,
+                        max_capacity_mw,
+                        voltage,
+                        status,
+                        created_at,
+                        updated_at
+                    FROM substations
+                    ORDER BY name ASC
+                `);
+            } else {
+                rows = await queryWithRetry(() => sql`
+                    SELECT
+                        id,
+                        name,
+                        NULL::text AS wallet_address,
+                        state,
+                        location,
+                        lat,
+                        lon,
+                        current_load_mw,
+                        max_capacity_mw,
+                        voltage,
+                        status,
+                        created_at,
+                        updated_at
+                    FROM substations
+                    ORDER BY name ASC
+                `);
+            }
         }
 
         return NextResponse.json({ data: rows.map(mapSubstationRow) });
     } catch (error) {
         console.error('Failed to fetch substations:', error);
+        const status = isTransientDbError(error) ? 503 : 500;
         return NextResponse.json(
-            { error: 'Failed to fetch substations' },
-            { status: 500 }
+            {
+                error: 'Failed to fetch substations',
+                details: getDbErrorDetails(error),
+                retryable: status === 503,
+            },
+            { status }
         );
     }
 }
@@ -102,6 +184,7 @@ export async function POST(request: NextRequest) {
         // Fix: Extracting the new credentials
         const station_id = String(body.station_id || '').trim();
         const passcode = String(body.passcode || '').trim();
+        const walletAddress = String(body.walletAddress || '').trim();
 
         // Validation
         if (!name || !state || !location) {
@@ -134,46 +217,85 @@ export async function POST(request: NextRequest) {
 
         const id = `sub-${crypto.randomUUID()}`;
         const dbStatus = toDbStatus(status);
+        const includeWalletAddress = await hasWalletAddressColumn();
 
-        // Fix: Added station_id and passcode to the SQL insertion
-        const [created] = await sql`
-            INSERT INTO substations (
-                id,
-                name,
-                state,
-                location,
-                lat,
-                lon,
-                current_load_mw,
-                max_capacity_mw,
-                voltage,
-                status,
-                station_id,
-                passcode
-            )
-            VALUES (
-                ${id},
-                ${name},
-                ${state},
-                ${location},
-                ${lat},
-                ${lon},
-                ${currentLoadMw},
-                ${maxCapacityMw},
-                ${voltage},
-                ${dbStatus},
-                ${station_id},
-                ${passcode}
-            )
-            RETURNING *
-        `;
+        const [created] = includeWalletAddress
+            ? await queryWithRetry(() => sql`
+                INSERT INTO substations (
+                    id,
+                    name,
+                    wallet_address,
+                    state,
+                    location,
+                    lat,
+                    lon,
+                    current_load_mw,
+                    max_capacity_mw,
+                    voltage,
+                    status,
+                    station_id,
+                    passcode
+                )
+                VALUES (
+                    ${id},
+                    ${name},
+                    ${walletAddress || null},
+                    ${state},
+                    ${location},
+                    ${lat},
+                    ${lon},
+                    ${currentLoadMw},
+                    ${maxCapacityMw},
+                    ${voltage},
+                    ${dbStatus},
+                    ${station_id},
+                    ${passcode}
+                )
+                RETURNING *
+            `)
+            : await queryWithRetry(() => sql`
+                INSERT INTO substations (
+                    id,
+                    name,
+                    state,
+                    location,
+                    lat,
+                    lon,
+                    current_load_mw,
+                    max_capacity_mw,
+                    voltage,
+                    status,
+                    station_id,
+                    passcode
+                )
+                VALUES (
+                    ${id},
+                    ${name},
+                    ${state},
+                    ${location},
+                    ${lat},
+                    ${lon},
+                    ${currentLoadMw},
+                    ${maxCapacityMw},
+                    ${voltage},
+                    ${dbStatus},
+                    ${station_id},
+                    ${passcode}
+                )
+                RETURNING *
+            `);
 
         return NextResponse.json({ data: mapSubstationRow(created) }, { status: 201 });
     } catch (error) {
         console.error('Failed to create substation:', error);
+        const status = isTransientDbError(error) ? 503 : 500;
         return NextResponse.json(
-            { error: 'Failed to create substation' },
-            { status: 500 }
+            {
+                error: 'Failed to create substation',
+                details: getDbErrorDetails(error),
+                retryable: status === 503,
+            },
+            { status }
         );
     }
 }
@@ -231,54 +353,54 @@ export async function PATCH(request: NextRequest) {
         let updated;
         try {
             if (status !== undefined && currentLoadMw !== undefined && maxCapacityMw !== undefined) {
-                [updated] = await sql`
+                [updated] = await queryWithRetry(() => sql`
                     UPDATE substations
                     SET status = ${toDbStatus(status)}, current_load_mw = ${currentLoadMw}, max_capacity_mw = ${maxCapacityMw}, updated_at = NOW()
                     WHERE id = ${id}
                     RETURNING *
-                `;
+                `);
             } else if (status !== undefined && currentLoadMw !== undefined) {
-                [updated] = await sql`
+                [updated] = await queryWithRetry(() => sql`
                     UPDATE substations
                     SET status = ${toDbStatus(status)}, current_load_mw = ${currentLoadMw}, updated_at = NOW()
                     WHERE id = ${id}
                     RETURNING *
-                `;
+                `);
             } else if (status !== undefined && maxCapacityMw !== undefined) {
-                [updated] = await sql`
+                [updated] = await queryWithRetry(() => sql`
                     UPDATE substations
                     SET status = ${toDbStatus(status)}, max_capacity_mw = ${maxCapacityMw}, updated_at = NOW()
                     WHERE id = ${id}
                     RETURNING *
-                `;
+                `);
             } else if (currentLoadMw !== undefined && maxCapacityMw !== undefined) {
-                [updated] = await sql`
+                [updated] = await queryWithRetry(() => sql`
                     UPDATE substations
                     SET current_load_mw = ${currentLoadMw}, max_capacity_mw = ${maxCapacityMw}, updated_at = NOW()
                     WHERE id = ${id}
                     RETURNING *
-                `;
+                `);
             } else if (status !== undefined) {
-                [updated] = await sql`
+                [updated] = await queryWithRetry(() => sql`
                     UPDATE substations
                     SET status = ${toDbStatus(status)}, updated_at = NOW()
                     WHERE id = ${id}
                     RETURNING *
-                `;
+                `);
             } else if (currentLoadMw !== undefined) {
-                [updated] = await sql`
+                [updated] = await queryWithRetry(() => sql`
                     UPDATE substations
                     SET current_load_mw = ${currentLoadMw}, updated_at = NOW()
                     WHERE id = ${id}
                     RETURNING *
-                `;
+                `);
             } else if (maxCapacityMw !== undefined) {
-                [updated] = await sql`
+                [updated] = await queryWithRetry(() => sql`
                     UPDATE substations
                     SET max_capacity_mw = ${maxCapacityMw}, updated_at = NOW()
                     WHERE id = ${id}
                     RETURNING *
-                `;
+                `);
             }
         } catch (dbError) {
             console.error('Database update query failed:', dbError);
@@ -295,9 +417,14 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json({ data: mapSubstationRow(updated) });
     } catch (error) {
         console.error('Failed to update substation:', error);
+        const status = isTransientDbError(error) ? 503 : 500;
         return NextResponse.json(
-            { error: 'Failed to update substation', details: error instanceof Error ? error.message : String(error) },
-            { status: 500 }
+            {
+                error: 'Failed to update substation',
+                details: getDbErrorDetails(error),
+                retryable: status === 503,
+            },
+            { status }
         );
     }
 }

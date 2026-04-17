@@ -13,6 +13,14 @@ import {
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, User } from 'firebase/auth';
 import { getFirestore, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import {
+  addSubstationTx,
+  assignEngineerTx,
+  hasSubstationRole,
+  reportFaultTx,
+  toUiError,
+} from '@/lib/blockchain';
+import { useWalletSync } from '@/lib/useWalletSync';
 
 // --- Global Declarations ---
 declare global {
@@ -54,6 +62,7 @@ export interface Substation {
 export interface AppAlert { id: string; message: string; type: 'critical' | 'success' | 'info'; }
 
 const SMOOTH_EASE = cubicBezier(0.22, 1, 0.36, 1);
+const ENABLE_AUTO_CHAIN_FAULT_REPORTING = process.env.NEXT_PUBLIC_ENABLE_AUTO_CHAIN_FAULT_REPORTING === 'true';
 
 // --- Design System Tokens (Kinetic Monolith) ---
 const TOKENS = {
@@ -180,7 +189,7 @@ export default function App() {
   const [isAddMode, setIsAddMode] = useState(false);
   const [tempMarkerPos, setTempMarkerPos] = useState<[number, number] | null>(null);
   const [addFormData, setAddFormData] = useState({
-    name: '', location: '', lat: '', lon: '', currentLoadMw: '50', maxCapacityMw: '150', voltage: '132'
+    walletAddress: '', name: '', location: '', lat: '', lon: '', currentLoadMw: '50', maxCapacityMw: '150', voltage: '132'
   });
 
   const [newSubstationCreds, setNewSubstationCreds] = useState<{id: string, passcode: string, name: string} | null>(null);
@@ -188,7 +197,7 @@ export default function App() {
 
   const [showEngineerModal, setShowEngineerModal] = useState(false);
   const [engineerFormData, setEngineerFormData] = useState({
-    name: '', email: '', region: ''
+    name: '', email: '', region: '', walletAddress: ''
   });
   const [isSubmittingEngineer, setIsSubmittingEngineer] = useState(false);
 
@@ -199,6 +208,30 @@ export default function App() {
       setActiveAlerts(prev => prev.filter(a => a.id !== id));
     }, 5000);
   }, []);
+
+  const {
+    walletAddress,
+    walletBusy,
+    walletChainId,
+    expectedChainId,
+    walletOnExpectedChain,
+    handleConnectWallet,
+    handleClearWallet,
+  } = useWalletSync(pushAlert);
+
+  const attachChainFaultMarker = useCallback(async (description: string) => {
+    if (!ENABLE_AUTO_CHAIN_FAULT_REPORTING) return description;
+    if (!walletAddress) return description;
+
+    try {
+      const chain = await reportFaultTx(description);
+      if (chain.faultId === null) return description;
+      return `${description} [chainFaultId:${chain.faultId}]`;
+    } catch (error) {
+      console.warn('On-chain fault report failed:', error);
+      return description;
+    }
+  }, [walletAddress]);
 
   useEffect(() => {
     if (typeof window !== 'undefined' && !document.getElementById('leaflet-css')) {
@@ -328,22 +361,27 @@ export default function App() {
               newlyTriggeredAlerts.push({ id: Math.random().toString(), message: `CRITICAL ALERT: ${sub.name} overloaded!`, type: 'critical' });
 
 
-              fetch('/api/tasks/auto-assign', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  location: sub.name,
-                  description: `SUBSTATION OVERLOAD: ${sub.name} is at ${loadPercentage.toFixed(1)}% capacity (${newLoad}MW). Immediate balancing required.`,
-                  severity: 'CRITICAL',
-                  state: selectedState?.name || 'Delhi'
-                })
-              }).then(r => r.json()).then(data => {
-                if(data.success) {
-                  pushAlert(`Auto-Dispatch: Eng. ${data.assignedTo} routed to ${sub.name}`, 'success');
-                } else {
-                  console.warn('Dispatch failed', data.error);
-                }
-              }).catch(e => console.error('Dispatch error', e));
+              void (async () => {
+                const baseDescription = `SUBSTATION OVERLOAD: ${sub.name} is at ${loadPercentage.toFixed(1)}% capacity (${newLoad}MW). Immediate balancing required.`;
+                const description = await attachChainFaultMarker(baseDescription);
+
+                fetch('/api/tasks/auto-assign', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    location: sub.name,
+                    description,
+                    severity: 'CRITICAL',
+                    state: selectedState?.name || 'Delhi'
+                  })
+                }).then(r => r.json()).then(data => {
+                  if(data.success) {
+                    pushAlert(`Auto-Dispatch: Eng. ${data.assignedTo} routed to ${sub.name}`, 'success');
+                  } else {
+                    console.warn('Dispatch failed', data.error);
+                  }
+                }).catch(e => console.error('Dispatch error', e));
+              })();
 
 
               
@@ -363,7 +401,7 @@ export default function App() {
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [view, substations.length]);
+  }, [view, substations.length, attachChainFaultMarker, selectedState, pushAlert]);
 
   const handleMapClick = useCallback((coords: [number, number]) => {
     if (!selectedState) return;
@@ -379,30 +417,36 @@ export default function App() {
 
   const closeAddSubstationModal = () => {
     setShowAddSubstationModal(false); setIsAddMode(false); setTempMarkerPos(null);
-    setAddFormData({ name: '', location: '', lat: '', lon: '', currentLoadMw: '50', maxCapacityMw: '150', voltage: '132' });
+    setAddFormData({ walletAddress: '', name: '', location: '', lat: '', lon: '', currentLoadMw: '50', maxCapacityMw: '150', voltage: '132' });
   };
 
   const closeEngineerModal = () => {
-    setShowEngineerModal(false); setEngineerFormData({ name: '', email: '', region: '' });
+    setShowEngineerModal(false); setEngineerFormData({ name: '', email: '', region: '', walletAddress: '' });
   };
 
   const handleAddEngineer = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!engineerFormData.name || !engineerFormData.email || !engineerFormData.region) { pushAlert('All fields are required', 'info'); return; }
+    if (!walletAddress) { pushAlert('Connect wallet before assigning engineer role on-chain.', 'info'); return; }
+    if (!engineerFormData.name || !engineerFormData.email || !engineerFormData.region || !engineerFormData.walletAddress) { pushAlert('All fields are required', 'info'); return; }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(engineerFormData.email)) { pushAlert('Please enter a valid email address', 'info'); return; }
 
     setIsSubmittingEngineer(true);
     try {
+      await assignEngineerTx(engineerFormData.walletAddress.trim());
+
       const res = await fetch('/api/engineers', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(engineerFormData)
+        body: JSON.stringify({
+          ...engineerFormData,
+          walletAddress: engineerFormData.walletAddress.trim(),
+        })
       });
       if (!res.ok) { const error = await res.json(); throw new Error(error.error || 'Failed to add engineer'); }
       await res.json();
-      pushAlert(`Engineer ${engineerFormData.name} created and credentials sent to ${engineerFormData.email}`, 'success');
+      pushAlert(`Engineer ${engineerFormData.name} assigned on-chain and credentials sent to ${engineerFormData.email}`, 'success');
       closeEngineerModal();
     } catch (err) {
-      pushAlert(`Failed to add engineer: ${err instanceof Error ? err.message : 'Unknown error'}`, 'info');
+      pushAlert(toUiError(err), 'info');
     } finally {
       setIsSubmittingEngineer(false);
     }
@@ -412,7 +456,8 @@ export default function App() {
     e.preventDefault();
     const lat = parseFloat(addFormData.lat); const lon = parseFloat(addFormData.lon);
 
-    if (!addFormData.name || !addFormData.location) { pushAlert('Name and location are required.', 'info'); return; }
+    if (!walletAddress) { pushAlert('Connect wallet before adding substations on-chain.', 'info'); return; }
+    if (!addFormData.walletAddress || !addFormData.name || !addFormData.location) { pushAlert('Wallet, name and location are required.', 'info'); return; }
     if (isNaN(lat) || isNaN(lon)) { pushAlert('Invalid coordinates.', 'info'); return; }
     if (!selectedState) { pushAlert('No state selected.', 'info'); return; }
 
@@ -425,23 +470,83 @@ export default function App() {
     const newPasscode = Math.floor(100000 + Math.random() * 900000).toString();
 
     try {
-      const res = await fetch('/api/substations', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: addFormData.name, state: selectedState.name, location: addFormData.location,
-          lat, lon, currentLoadMw: parseInt(addFormData.currentLoadMw), maxCapacityMw: parseInt(addFormData.maxCapacityMw),
-          voltage: parseInt(addFormData.voltage), status: 'stable', station_id: newStationId, passcode: newPasscode
-        })
+      const threshold = Number(addFormData.maxCapacityMw);
+      const currentLoadMw = Number(addFormData.currentLoadMw);
+      const voltage = Number(addFormData.voltage);
+
+      if (!Number.isFinite(threshold) || threshold <= 0) { pushAlert('Max capacity must be a positive number.', 'info'); return; }
+      if (!Number.isFinite(currentLoadMw) || currentLoadMw < 0) { pushAlert('Current load must be a valid non-negative number.', 'info'); return; }
+      if (!Number.isFinite(voltage) || voltage <= 0) { pushAlert('Voltage must be a positive number.', 'info'); return; }
+
+      const substationAddress = addFormData.walletAddress.trim();
+      const alreadyAssigned = await hasSubstationRole(substationAddress);
+
+      const txHash = await addSubstationTx({
+        substationAddress,
+        name: addFormData.name,
+        threshold,
+        assignRoleFirst: !alreadyAssigned,
       });
-      if (!res.ok) throw new Error();
+
+      const persistBody = {
+        walletAddress: substationAddress,
+        name: addFormData.name,
+        state: selectedState.name,
+        location: addFormData.location,
+        lat,
+        lon,
+        currentLoadMw,
+        maxCapacityMw: threshold,
+        voltage,
+        status: 'stable',
+        station_id: newStationId,
+        passcode: newPasscode,
+      };
+
+      const persistAttempts = 4;
+      let res: Response | null = null;
+      let persistErrorMessage = '';
+
+      for (let attempt = 1; attempt <= persistAttempts; attempt += 1) {
+        res = await fetch('/api/substations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(persistBody),
+        });
+
+        if (res.ok) {
+          break;
+        }
+
+        const errorPayload = await res.json().catch(() => null) as { error?: unknown; details?: unknown; retryable?: unknown } | null;
+        const parts = errorPayload
+          ? [errorPayload.error, errorPayload.details].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : [];
+        persistErrorMessage = parts.join(' ');
+
+        const retryableFlag = typeof errorPayload?.retryable === 'boolean' ? errorPayload.retryable : null;
+        const retryable = retryableFlag ?? (res.status === 503 || res.status >= 500);
+
+        if (!retryable || attempt === persistAttempts) {
+          break;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 350 * 2 ** (attempt - 1)));
+      }
+
+      if (!res || !res.ok) {
+        const baseMessage = `Substation was added on-chain (tx ${txHash}) but database persistence failed${res ? ` (HTTP ${res.status})` : ''}.`;
+        throw new Error(persistErrorMessage ? `${baseMessage} ${persistErrorMessage}` : baseMessage);
+      }
+
       const payload = await res.json();
       setSubstations(prev => [...prev, { ...payload.data, logs: [] }]);
       setSelectedSubstationId(payload.data.id);
       closeAddSubstationModal();
       setNewSubstationCreds({ id: newStationId, passcode: newPasscode, name: addFormData.name });
-      pushAlert('Substation added successfully.', 'success');
+      pushAlert('Substation added on-chain and persisted successfully.', 'success');
     } catch (err) {
-      pushAlert('Failed to add substation.', 'info');
+      pushAlert(toUiError(err), 'info');
     }
   };
 
@@ -707,13 +812,26 @@ export default function App() {
                 <div><h2 className="text-4xl font-bold tracking-tighter text-white">Regional Telemetry</h2><p className="text-neutral-400 text-sm mt-2">Live grid data stream.</p></div>
                 <div className="flex flex-col md:flex-row items-end md:items-center gap-6">
                   <div className="flex flex-wrap items-center gap-4">
+                    <button onClick={walletAddress ? handleClearWallet : handleConnectWallet} disabled={walletBusy} className="bg-[#2a2a2a] hover:bg-[#353534] disabled:opacity-60 text-white px-6 py-3 rounded-sm text-xs font-bold uppercase tracking-tight flex items-center gap-3 transition-colors">
+                      {walletBusy ? 'Connecting...' : walletAddress ? `Wallet ${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : 'Connect Wallet'}
+                    </button>
                     <button onClick={() => { setShowAddSubstationModal(true); setIsAddMode(true); }} className="bg-[#2a2a2a] hover:bg-[#353534] text-white px-6 py-3 rounded-sm text-xs font-bold uppercase tracking-tight flex items-center gap-3 transition-colors"><PlusCircle className="w-4 h-4" /> Add Station</button>
                     <button onClick={() => setShowEngineerModal(true)} className="bg-[#2a2a2a] hover:bg-[#353534] text-white px-6 py-3 rounded-sm text-xs font-bold uppercase tracking-tight flex items-center gap-3 transition-colors"><UserPlus className="w-4 h-4" /> Add Engineer</button>
                     <button onClick={handleGenerateReport} className="bg-[#2a2a2a] hover:bg-[#353534] text-white px-6 py-3 rounded-sm text-xs font-bold uppercase tracking-tight flex items-center gap-3 transition-colors"><FileText className="w-4 h-4" /> Reports</button>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <div className="w-2 h-2 rounded-full bg-white shadow-[0_0_10px_#ffffff]"></div>
-                    <span className="text-[11px] font-medium tracking-widest uppercase text-neutral-400">Uplink Secured</span>
+                  <div className="flex flex-col items-end gap-2">
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-2 rounded-full bg-white shadow-[0_0_10px_#ffffff]"></div>
+                      <span className="text-[11px] font-medium tracking-widest uppercase text-neutral-400">Uplink Secured</span>
+                    </div>
+                    {walletAddress && expectedChainId !== null && (
+                      <div className="flex items-center gap-3">
+                        <div className={`w-2 h-2 rounded-full ${walletOnExpectedChain ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]' : 'bg-red-500 shadow-[0_0_8px_#ef4444]'}`} />
+                        <span className="text-[11px] font-medium tracking-widest uppercase text-neutral-400">
+                          {walletOnExpectedChain ? `Chain ${walletChainId ?? expectedChainId}` : `Wrong Chain (${walletChainId ?? 'unknown'})`}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </header>
@@ -842,6 +960,7 @@ export default function App() {
                 <form onSubmit={handleAddSubstationSubmit} className="flex-1 flex flex-col gap-4 overflow-y-auto">
                   <div className="space-y-4">
                     {[
+                      { label: 'Substation Wallet Address', key: 'walletAddress', placeholder: '0x...' },
                       { label: 'Name', key: 'name', placeholder: 'e.g., Northern Hub' },
                       { label: 'Location', key: 'location', placeholder: 'e.g., Sector 5' }
                     ].map(({ label, key, placeholder }) => (
@@ -916,6 +1035,10 @@ export default function App() {
                 <div>
                   <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-2">Engineer Name</label>
                   <input type="text" required placeholder="e.g., Rajesh Kumar" value={engineerFormData.name} onChange={(e) => setEngineerFormData({ ...engineerFormData, name: e.target.value })} className="w-full bg-[#353534] focus:bg-[#393939] focus:outline-none transition-all py-2 px-3 text-white placeholder:text-neutral-600 rounded-sm text-sm" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-2">Engineer Wallet Address</label>
+                  <input type="text" required placeholder="0x..." value={engineerFormData.walletAddress} onChange={(e) => setEngineerFormData({ ...engineerFormData, walletAddress: e.target.value })} className="w-full bg-[#353534] focus:bg-[#393939] focus:outline-none transition-all py-2 px-3 text-white placeholder:text-neutral-600 rounded-sm text-sm font-mono" />
                 </div>
                 <div>
                   <label className="block text-[11px] font-medium text-neutral-500 uppercase tracking-widest mb-2">Email Address</label>

@@ -6,16 +6,20 @@ import {
   LogOut, AlertCircle, CheckCircle2, Info, ArrowLeft, Activity, Zap, AlertOctagon
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { processLeaveTx, reportFaultTx, toUiError } from '@/lib/blockchain';
+import { useWalletSync } from '@/lib/useWalletSync';
 
 const SMOOTH_EASE = cubicBezier(0.22, 1, 0.36, 1);
 
 const INDIA_BOUNDS = { minLat: 6.4, maxLat: 35.0, minLon: 68.1, maxLon: 97.4 };
+const AUTO_CHAIN_FAULT_COOLDOWN_MS = 90_000;
+const ENABLE_AUTO_CHAIN_FAULT_REPORTING = process.env.NEXT_PUBLIC_ENABLE_AUTO_CHAIN_FAULT_REPORTING === 'true';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type ManagerTab = 'overview' | 'meters' | 'theft-detection' | 'leave-approvals';
 type ViewState = 'login-manager' | 'manager-portal';
 
-interface LeaveRequest { id: string; engineerName: string; engineerEmail: string; startDate: string; endDate: string; reason: string; status: 'pending' | 'approved' | 'rejected'; submittedAt: string; }
+interface LeaveRequest { id: string; engineerName: string; engineerEmail: string; startDate: string; endDate: string; reason: string; status: 'pending' | 'approved' | 'rejected'; submittedAt: string; chainLeaveId?: number | null; }
 interface Substation { id: string; name: string; lat: number; lon: number; location: string; currentLoadMW: number; maxCapacityMW: number; status: 'stable' | 'warning' | 'critical'; voltage: number; logs: any[]; }
 interface SmartMeter { id: string; houseAddress: string; voltage: number; current: number; status: 'normal' | 'high' | 'low'; lineDrawKW: number; meterReadingKW: number; theftSuspected: boolean; lastUpdated: Date; }
 interface StateData { id: number; name: string; color: string; path: string; load: number; centerX: number; centerY: number; minLat: number; maxLat: number; minLon: number; maxLon: number; }
@@ -114,12 +118,56 @@ export default function ManagerDashboardPage() {
   const [leafletReady, setLeafletReady] = useState(false);
   const [substationsLoading, setSubstationsLoading] = useState(false);
   const [subStationChanges, setSubstationChanges] = useState<Map<string, Partial<Substation>>>(new Map());
+  const [leaveActionPendingId, setLeaveActionPendingId] = useState<string | null>(null);
+
+  const faultTxInFlightRef = useRef(false);
+  const lastFaultTxAtRef = useRef(0);
+  const lastFaultSkipNoticeAtRef = useRef(0);
 
   const pushAlert = useCallback((message: string, type: 'critical' | 'success' | 'info') => {
     const id = Math.random().toString();
     setActiveAlerts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => setActiveAlerts((prev) => prev.filter((a) => a.id !== id)), 6000);
   }, []);
+
+  const {
+    walletAddress,
+    walletBusy,
+    walletChainId,
+    expectedChainId,
+    walletOnExpectedChain,
+    handleConnectWallet,
+    handleClearWallet,
+  } = useWalletSync(pushAlert);
+
+  const attachChainFaultMarker = useCallback(async (description: string) => {
+    if (!ENABLE_AUTO_CHAIN_FAULT_REPORTING) return description;
+    if (!walletAddress) return description;
+    if (managerTab === 'leave-approvals') return description;
+
+    const now = Date.now();
+    if (faultTxInFlightRef.current) return description;
+    if (now - lastFaultTxAtRef.current < AUTO_CHAIN_FAULT_COOLDOWN_MS) return description;
+
+    faultTxInFlightRef.current = true;
+    try {
+      const chain = await reportFaultTx(description);
+      lastFaultTxAtRef.current = Date.now();
+      if (chain.faultId === null) return description;
+      return `${description} [chainFaultId:${chain.faultId}]`;
+    } catch (error) {
+      console.warn('On-chain fault report failed:', error);
+
+      if (Date.now() - lastFaultSkipNoticeAtRef.current > 60_000) {
+        pushAlert('Auto on-chain fault logging skipped temporarily. Manual approvals remain available.', 'info');
+        lastFaultSkipNoticeAtRef.current = Date.now();
+      }
+
+      return description;
+    } finally {
+      faultTxInFlightRef.current = false;
+    }
+  }, [walletAddress, managerTab, pushAlert]);
 
   useEffect(() => {
     const savedStationId = localStorage.getItem('stationLoginId') || '';
@@ -175,7 +223,8 @@ export default function ManagerDashboardPage() {
             id: String(row.id), engineerName: String(row.engineer_name ?? row.engineerName ?? 'Unknown'),
             engineerEmail: String(row.engineer_email ?? row.engineerEmail ?? ''), startDate: String(row.start_date ?? row.startDate),
             endDate: String(row.end_date ?? row.endDate), reason: String(row.reason), status: String(row.status).toLowerCase() as LeaveRequest['status'],
-            submittedAt: String(row.submitted_at ?? row.submittedAt)
+            submittedAt: String(row.submitted_at ?? row.submittedAt),
+            chainLeaveId: row.chainLeaveId !== undefined && row.chainLeaveId !== null ? Number(row.chainLeaveId) : null,
           }))
         );
       } catch {
@@ -238,56 +287,68 @@ export default function ManagerDashboardPage() {
     const telemetryInterval = setInterval(() => {
       // 1. Audit Smart Meters (V * I Formula + Theft Logic)
       setSmartMeters(prev => prev.map(meter => {
-        // High probability to trigger for a snappy demo
-        const isTheft = meter.theftSuspected || (Math.random() > 0.95); 
+        // Keep theft detections visible for a short period, but allow them to clear.
+        const keepPriorTheft = meter.theftSuspected && Math.random() > 0.35;
+        const theftTriggered = keepPriorTheft || (Math.random() > 0.96);
         const newVoltage = Math.max(190, Math.min(270, meter.voltage + (Math.random() - 0.5) * 6));
         const newCurrent = Math.max(2, Math.min(30, meter.current + (Math.random() - 0.5) * 2));
         const newStatus: SmartMeter['status'] = newVoltage > 245 ? 'high' : newVoltage < 215 ? 'low' : 'normal';
         
         const reading = (newVoltage * newCurrent) / 1000;
-        const line = isTheft ? reading + 3.5 : reading + 0.1;
-        const suspected = (line - reading) > 1.5;
+        const lineLossKw = theftTriggered
+          ? (2 + Math.random() * 2)
+          : (0.05 + Math.random() * 0.25);
+        const line = reading + lineLossKw;
+        const suspected = theftTriggered;
 
         if (suspected && !meter.theftSuspected) {
           const msg = `THEFT DETECTED: Bypass at ${meter.houseAddress} (${(line - reading).toFixed(2)}kW)`;
           pushAlert(msg, 'critical');
-          
-          fetch('/api/tasks/auto-assign', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              location: meter.houseAddress,
-              description: msg,
-              severity: 'critical',
-              state: selectedState.name
-            })
-          }).then(r => r.json()).then(data => {
-            if(data.success) {
-              pushAlert(`Automated Dispatch: Eng. ${data.assignedTo} routed.`, 'success');
-            } else {
-              pushAlert(`Dispatch Failed: ${data.error}`, 'info'); 
-            }
-          }).catch(e => console.error('Dispatch failed', e));
+
+          void (async () => {
+            const description = await attachChainFaultMarker(msg);
+            fetch('/api/tasks/auto-assign', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                location: meter.houseAddress,
+                description,
+                severity: 'critical',
+                state: selectedState.name
+              })
+            }).then(r => r.json()).then(data => {
+              if(data.success) {
+                pushAlert(`Automated Dispatch: Eng. ${data.assignedTo} routed.`, 'success');
+              } else {
+                pushAlert(`Dispatch Failed: ${data.error}`, 'info'); 
+              }
+            }).catch(e => console.error('Dispatch failed', e));
+          })();
         }
 
         if (newStatus === 'high' && meter.status !== 'high') {
           const faultMsg = `METER FAULT: Severe Overvoltage (${newVoltage.toFixed(1)}V) detected at ${meter.houseAddress}.`;
           pushAlert(faultMsg, 'info'); // Alert the manager UI
-          
-          fetch('/api/tasks/auto-assign', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              location: meter.houseAddress,
-              description: `${faultMsg} Potential hardware failure or local transformer issue. Requires physical inspection.`,
-              severity: 'MEDIUM', // Meter faults are MEDIUM severity
-              state: selectedState.name
-            })
-          }).then(r => r.json()).then(data => {
-            if(data.success) {
-              pushAlert(`Maintenance Dispatch: Eng. ${data.assignedTo} routed to check overvoltage.`, 'success');
-            }
-          }).catch(e => console.error('Dispatch failed', e));
+
+          void (async () => {
+            const baseDescription = `${faultMsg} Potential hardware failure or local transformer issue. Requires physical inspection.`;
+            const description = await attachChainFaultMarker(baseDescription);
+
+            fetch('/api/tasks/auto-assign', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                location: meter.houseAddress,
+                description,
+                severity: 'MEDIUM', // Meter faults are MEDIUM severity
+                state: selectedState.name
+              })
+            }).then(r => r.json()).then(data => {
+              if(data.success) {
+                pushAlert(`Maintenance Dispatch: Eng. ${data.assignedTo} routed to check overvoltage.`, 'success');
+              }
+            }).catch(e => console.error('Dispatch failed', e));
+          })();
         }
 
 
@@ -313,22 +374,27 @@ export default function ManagerDashboardPage() {
               newLogs.unshift({ id: Math.random().toString(), timestamp: new Date(), message: errorMsg, type: 'critical' });
               newlyTriggeredAlerts.push({ id: Math.random().toString(), message: `CRITICAL ALERT: Node Overloaded!`, type: 'critical' });
 
-              fetch('/api/tasks/auto-assign', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  location: sub.name,
-                  description: `Transformer Overload Warning: ${errorMsg}`,
-                  severity: 'critical',
-                  state: selectedState.name
-                })
-              }).then(r => r.json()).then(data => {
-                if(data.success) {
-                  pushAlert(`Automated Dispatch: Eng. ${data.assignedTo} routed to ${sub.name}`, 'success');
-                } else {
-                  pushAlert(`Dispatch Failed: ${data.error}`, 'info'); 
-                }
-              }).catch(e => console.error('Dispatch failed', e));
+              void (async () => {
+                const baseDescription = `Transformer Overload Warning: ${errorMsg}`;
+                const description = await attachChainFaultMarker(baseDescription);
+
+                fetch('/api/tasks/auto-assign', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    location: sub.name,
+                    description,
+                    severity: 'critical',
+                    state: selectedState.name
+                  })
+                }).then(r => r.json()).then(data => {
+                  if(data.success) {
+                    pushAlert(`Automated Dispatch: Eng. ${data.assignedTo} routed to ${sub.name}`, 'success');
+                  } else {
+                    pushAlert(`Dispatch Failed: ${data.error}`, 'info'); 
+                  }
+                }).catch(e => console.error('Dispatch failed', e));
+              })();
 
           } else if (loadPercentage < 80 && (sub.status === 'warning' || sub.status === 'critical')) {
               newStatus = 'stable';
@@ -345,28 +411,57 @@ export default function ManagerDashboardPage() {
       }
     }, 10000); // Trigger set to exactly 10 seconds
     return () => clearInterval(telemetryInterval);
-  }, [view, smartMeters.length, selectedState, substations.length, selectedSubstationId, pushAlert]);
+  }, [view, smartMeters.length, selectedState, substations.length, selectedSubstationId, pushAlert, attachChainFaultMarker]);
 
   const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!stationLoginId || !passcode || !loginStateId) return;
     
     try {
-      const res = await fetch('/api/substations/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ station_id: stationLoginId.trim(), passcode })
-      });
+      const loginPayload = {
+        station_id: stationLoginId.trim().toUpperCase(),
+        passcode: passcode.trim(),
+      };
 
-      if (!res.ok) {
-        const err = await res.json();
-        pushAlert(err.error || 'Invalid credentials. Check Station ID and Passcode.', 'critical');
+      const loginAttempts = 3;
+      let res: Response | null = null;
+      let loginErrorMessage = '';
+
+      for (let attempt = 1; attempt <= loginAttempts; attempt += 1) {
+        res = await fetch('/api/substations/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(loginPayload)
+        });
+
+        if (res.ok) {
+          break;
+        }
+
+        const err = await res.json().catch(() => null) as { error?: unknown; details?: unknown; retryable?: unknown } | null;
+        const parts = err
+          ? [err.error, err.details].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          : [];
+        loginErrorMessage = parts.join(' ');
+
+        const retryableFlag = typeof err?.retryable === 'boolean' ? err.retryable : null;
+        const retryable = retryableFlag ?? (res.status === 503 || res.status >= 500);
+
+        if (!retryable || attempt === loginAttempts) {
+          break;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 300 * 2 ** (attempt - 1)));
+      }
+
+      if (!res || !res.ok) {
+        pushAlert(loginErrorMessage || `Invalid credentials. Check Station ID and Passcode${res ? ` (HTTP ${res.status})` : ''}.`, 'critical');
         return;
       }
 
       const { data } = await res.json();
 
-      const trimmedId = stationLoginId.trim().toUpperCase();
+      const trimmedId = loginPayload.station_id;
       localStorage.setItem('stationLoginId', trimmedId);
       localStorage.setItem('managerStateId', loginStateId);
       localStorage.setItem('selectedSubstationUUID', data.id); 
@@ -377,7 +472,7 @@ export default function ManagerDashboardPage() {
       pushAlert('Substation Terminal Linked Successfully.', 'success');
     } catch (err) {
       console.error(err);
-      pushAlert('Connection to database failed.', 'critical');
+      pushAlert('Connection to server failed. Please retry.', 'critical');
     }
   };
 
@@ -434,7 +529,26 @@ export default function ManagerDashboardPage() {
   };
 
   const handleLeaveAction = async (leaveId: string, action: 'approved' | 'rejected') => {
+    if (leaveActionPendingId === leaveId) {
+      return;
+    }
+
+    setLeaveActionPendingId(leaveId);
+
     try {
+      const target = leaveRequests.find((request) => request.id === leaveId);
+      if (!target) {
+        throw new Error('Leave request not found.');
+      }
+
+      if (target.chainLeaveId !== null && target.chainLeaveId !== undefined) {
+        if (!walletAddress) {
+          pushAlert('Connect wallet before processing leave on-chain.', 'info');
+          return;
+        }
+        await processLeaveTx(target.chainLeaveId, action === 'approved');
+      }
+
       const res = await fetch('/api/leave-requests', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -443,13 +557,18 @@ export default function ManagerDashboardPage() {
       if (!res.ok) throw new Error();
       setLeaveRequests((prev) => prev.map((r) => r.id === leaveId ? { ...r, status: action } : r));
       pushAlert(`Leave request ${action === 'approved' ? 'approved' : 'denied'}.`, action === 'approved' ? 'success' : 'info');
-    } catch {
-      pushAlert('Unable to process leave request.', 'critical');
+    } catch (error) {
+      pushAlert(toUiError(error), 'critical');
+    } finally {
+      setLeaveActionPendingId((current) => (current === leaveId ? null : current));
     }
   };
 
   if (!isHydrated) return null;
   const selectedSubstation = substations.find((s) => s.id === selectedSubstationId) ?? null;
+  const suspiciousMeters = smartMeters
+    .filter((meter) => meter.theftSuspected)
+    .sort((a, b) => b.lastUpdated.getTime() - a.lastUpdated.getTime());
 
   return (
     <div className="min-h-screen bg-[#131313] text-neutral-200 overflow-hidden font-sans selection:bg-white/20">
@@ -569,7 +688,7 @@ export default function ManagerDashboardPage() {
               <nav className="flex-1 space-y-4">
                 {(['overview', 'meters', 'theft-detection', 'leave-approvals'] as ManagerTab[]).map((tab) => {
                   const labels: Record<ManagerTab, string> = { overview: 'Overview', meters: 'Meter Telemetry', 'theft-detection': 'Theft Detection', 'leave-approvals': 'Personnel' };
-                  const pendingCount = tab === 'leave-approvals' ? leaveRequests.filter((l) => l.status === 'pending').length : tab === 'theft-detection' ? smartMeters.filter(m => m.theftSuspected).length : 0;
+                  const pendingCount = tab === 'leave-approvals' ? leaveRequests.filter((l) => l.status === 'pending').length : tab === 'theft-detection' ? suspiciousMeters.length : 0;
                   
                   return (
                     <button key={tab} onClick={() => setManagerTab(tab)}
@@ -601,9 +720,22 @@ export default function ManagerDashboardPage() {
                   <p className="text-neutral-400 text-sm mt-2">Managing Substation Telemetry</p>
                 </div>
                 <div className="flex flex-col md:flex-row items-end md:items-center gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-2 h-2 rounded-full bg-white shadow-[0_0_10px_#ffffff]" />
-                    <span className="text-[11px] font-medium tracking-widest uppercase text-neutral-400">System Active</span>
+                  <button onClick={walletAddress ? handleClearWallet : handleConnectWallet} disabled={walletBusy} className="bg-[#2a2a2a] hover:bg-[#353534] disabled:opacity-60 text-white px-4 py-2 rounded-sm text-[11px] font-bold uppercase tracking-tight transition-colors">
+                    {walletBusy ? 'Connecting...' : walletAddress ? `Wallet ${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : 'Connect Wallet'}
+                  </button>
+                  <div className="flex flex-col items-end gap-2">
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-2 rounded-full bg-white shadow-[0_0_10px_#ffffff]" />
+                      <span className="text-[11px] font-medium tracking-widest uppercase text-neutral-400">System Active</span>
+                    </div>
+                    {walletAddress && expectedChainId !== null && (
+                      <div className="flex items-center gap-3">
+                        <div className={`w-2 h-2 rounded-full ${walletOnExpectedChain ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]' : 'bg-red-500 shadow-[0_0_8px_#ef4444]'}`} />
+                        <span className="text-[11px] font-medium tracking-widest uppercase text-neutral-400">
+                          {walletOnExpectedChain ? `Chain ${walletChainId ?? expectedChainId}` : `Wrong Chain (${walletChainId ?? 'unknown'})`}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </header>
@@ -788,9 +920,9 @@ export default function ManagerDashboardPage() {
                         </tr>
                       </thead>
                       <tbody className="text-sm font-mono">
-                        {smartMeters.filter(m => m.theftSuspected).length === 0 ? (
+                        {suspiciousMeters.length === 0 ? (
                           <tr><td colSpan={6} className="p-8 text-center text-neutral-500 font-sans">No bypass anomalies currently detected in this cycle.</td></tr>
-                        ) : smartMeters.filter(m => m.theftSuspected).map((meter, index) => {
+                        ) : suspiciousMeters.map((meter, index) => {
                           const discrepancy = (meter.lineDrawKW - meter.meterReadingKW).toFixed(2);
                           return (
                             <tr key={meter.id} className={index % 2 === 0 ? 'bg-[#0e0e0e]' : 'bg-[#131313]'}>
@@ -837,8 +969,20 @@ export default function ManagerDashboardPage() {
                           </div>
                           {req.status === 'pending' && (
                             <div className="flex gap-4 shrink-0">
-                              <button onClick={() => handleLeaveAction(req.id, 'approved')} className="text-[#1a1c1c] bg-white hover:bg-neutral-200 px-6 py-3 rounded-sm font-bold uppercase tracking-tight text-xs transition-colors">Approve</button>
-                              <button onClick={() => handleLeaveAction(req.id, 'rejected')} className="text-white bg-[#2a2a2a] hover:bg-[#353534] px-6 py-3 rounded-sm font-bold uppercase tracking-tight text-xs transition-colors">Deny</button>
+                              <button
+                                onClick={() => handleLeaveAction(req.id, 'approved')}
+                                disabled={leaveActionPendingId === req.id}
+                                className="text-[#1a1c1c] bg-white hover:bg-neutral-200 disabled:opacity-60 disabled:cursor-not-allowed px-6 py-3 rounded-sm font-bold uppercase tracking-tight text-xs transition-colors"
+                              >
+                                {leaveActionPendingId === req.id ? 'Approving...' : 'Approve'}
+                              </button>
+                              <button
+                                onClick={() => handleLeaveAction(req.id, 'rejected')}
+                                disabled={leaveActionPendingId === req.id}
+                                className="text-white bg-[#2a2a2a] hover:bg-[#353534] disabled:opacity-60 disabled:cursor-not-allowed px-6 py-3 rounded-sm font-bold uppercase tracking-tight text-xs transition-colors"
+                              >
+                                {leaveActionPendingId === req.id ? 'Processing...' : 'Deny'}
+                              </button>
                             </div>
                           )}
                         </div>

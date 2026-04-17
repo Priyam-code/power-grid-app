@@ -1,0 +1,9 @@
+[
+  "function assignSubstation(address user)",
+  "function assignEngineer(address user)",
+  "function getRole(address user) view returns (uint8)",
+  "function isControl(address user) view returns (bool)",
+  "function isSubstation(address user) view returns (bool)",
+  "function isEngineer(address user) view returns (bool)",
+  "event RoleAssigned(address indexed actor, address indexed user, uint8 role)"
+]

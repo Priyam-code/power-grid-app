@@ -1,0 +1,14 @@
+[
+  "function applyLeave(string reason)",
+  "function processLeave(uint256 id, bool approve)",
+  "function reportFault(string desc)",
+  "function submitFaultRectification(uint256 id, string report)",
+  "function resolveFault(uint256 id)",
+  "function leaves(uint256) view returns (address engineer, string reason, bool approved, bool processed, address processedBy)",
+  "function faults(uint256) view returns (uint256 id, address substation, string description, bool resolved, address resolvedBy, string rectificationReport)",
+  "event LeaveApplied(address indexed engineer, uint256 indexed id, string reason)",
+  "event LeaveProcessed(uint256 indexed id, bool approved, address indexed processedBy)",
+  "event FaultReported(uint256 indexed id, address indexed substation, string description)",
+  "event FaultRectificationSubmitted(uint256 indexed id, address indexed engineer, string report)",
+  "event FaultResolved(uint256 indexed id, address indexed engineer)"
+]

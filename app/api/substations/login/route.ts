@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import sql from '@/db/db';
+import sql, { getDbErrorDetails, isTransientDbError, queryWithRetry } from '@/db/db';
+
+export const runtime = 'nodejs';
 
 type SubstationStatus = 'stable' | 'warning' | 'critical';
 
@@ -30,7 +32,7 @@ export async function POST(request: NextRequest) {
     try {
         const body = await request.json();
         
-        const station_id = String(body.station_id || '').trim();
+        const station_id = String(body.station_id || '').trim().toUpperCase();
         const passcode = String(body.passcode || '').trim();
 
         if (!station_id || !passcode) {
@@ -40,13 +42,11 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // We cast the result as 'any' to stop TypeScript from 
-        // over-analyzing the return type during the production build.
-        const result: any = await sql`
+                const result: any = await queryWithRetry(() => sql`
             SELECT * FROM substations
             WHERE station_id = ${station_id} 
               AND passcode = ${passcode}
-        `;
+                `);
 
         // Safe extraction that satisfies the build worker
         const rows = Array.isArray(result) ? result : (result?.rows || []);
@@ -67,9 +67,14 @@ export async function POST(request: NextRequest) {
 
     } catch (error) {
         console.error('Failed to login substation:', error);
+        const status = isTransientDbError(error) ? 503 : 500;
         return NextResponse.json(
-            { error: 'Internal server error during login' },
-            { status: 500 }
+            {
+                error: 'Internal server error during login',
+                details: getDbErrorDetails(error),
+                retryable: status === 503,
+            },
+            { status }
         );
     }
 }
